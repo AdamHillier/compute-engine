@@ -55,6 +55,10 @@ typedef struct {
   // padding
   TfLitePadding padding_type{};
   TfLitePaddingValues padding_values{};
+  // We could copy `TfLitePadding` to include an extra value kTfLitePaddingOne.
+  // However this requires copying a lot of other code like im2col, so it is
+  // easier to simply have one extra flag here.
+  bool one_padding = false;
 
   // output tensor dimensions
   int64_t out_width{0};
@@ -125,12 +129,25 @@ void* Init(TfLiteContext* context, const char* buffer, size_t length) {
     conv_params->dilations[i] = dilation_vector[i].AsInt64();
 
   // reading padding
-  conv_params->padding_type =
-      m["padding"].ToString() == "VALID" ||
-              m["padding"].ToString() ==
-                  "valid"  // TODO: not sure if this check is needed
-          ? TfLitePadding::kTfLitePaddingValid
-          : TfLitePadding::kTfLitePaddingSame;
+  if (m["padding"].IsNull() || m["padding"].ToString() == "VALID" ||
+      m["padding"].ToString() == "valid") {
+    conv_params->padding_type = kTfLitePaddingValid;
+    conv_params->one_padding = false;
+  } else if (m["padding"].ToString() == "SAME" ||
+             m["padding"].ToString() == "same") {
+    conv_params->padding_type = kTfLitePaddingSame;
+    conv_params->one_padding = false;
+  } else if (m["padding"].ToString() == "ONE" ||
+             m["padding"].ToString() == "one") {
+    // For computation of output size and for im2col,
+    // the tflite type need to be set to Same.
+    conv_params->padding_type = kTfLitePaddingSame;
+    conv_params->one_padding = true;
+  } else {
+    context->ReportError(context, "Invalid padding attribute.");
+    return conv_params;
+  }
+
   return conv_params;
 }
 
@@ -379,7 +396,8 @@ void EvalOpt(TfLiteContext* context, TfLiteNode* node,
                              : nullptr;
 
   if (!params->is_padding_correction_cached &&
-      params->padding_type == TfLitePadding::kTfLitePaddingSame) {
+      params->padding_type == TfLitePadding::kTfLitePaddingSame &&
+      !params->one_padding) {
     // In the first run, fill the cache
     using PaddingFunctor =
         ce::core::PaddingFunctor<T, T, ce::core::FilterFormat::OHWI>;
@@ -453,7 +471,7 @@ void EvalOpt(TfLiteContext* context, TfLiteNode* node,
       GetTensorData<float>(fused_multiply), GetTensorData<float>(fused_add),
       GetTensorShape(output), GetTensorData<T>(output), GetTensorShape(im2col),
       GetTensorData<T>(im2col), params->bitpack_before_im2col,
-      params->padding_buffer.data(),
+      params->padding_buffer.data(), params->one_padding,
       CpuBackendContext::GetFromContext(context));
 }
 
