@@ -38,10 +38,16 @@ namespace tflite {
 constexpr int Padding_ONE = Padding_MAX + 1;
 
 const char* GetPaddingName(enum Padding padding) {
-  if (padding == Padding_VALID) return "VALID";
-  if (padding == Padding_SAME) return "SAME";
-  if (padding == Padding_ONE) return "ONE";
-  return "UNKNOWN";
+  switch (padding) {
+    case Padding_VALID:
+      return "VALID";
+    case Padding_SAME:
+      return "SAME";
+    case Padding_ONE:
+      return "SAME_ONE";
+    default:
+      return "UNKNOWN";
+  };
 }
 
 namespace ops {

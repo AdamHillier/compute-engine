@@ -137,8 +137,8 @@ void* Init(TfLiteContext* context, const char* buffer, size_t length) {
              m["padding"].ToString() == "same") {
     conv_params->padding_type = kTfLitePaddingSame;
     conv_params->one_padding = false;
-  } else if (m["padding"].ToString() == "ONE" ||
-             m["padding"].ToString() == "one") {
+  } else if (m["padding"].ToString() == "SAME_ONE" ||
+             m["padding"].ToString() == "same_one") {
     // For computation of output size and for im2col,
     // the tflite type need to be set to Same.
     conv_params->padding_type = kTfLitePaddingSame;
