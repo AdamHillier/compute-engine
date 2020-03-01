@@ -362,15 +362,12 @@ void BinaryKernelNeonOutOfOrder32BP4x4(
       // Write our values to the destination described by
       // (x3 address, x4 stride).
       "str q16, [x3, #0]\n"
-      "add x3, x3, x4\n"
-      "str q18, [x3, #0]\n"
-      "add x3, x3, x4\n"
+      "str q18, [x3, x4]\n"
       RUY_MAKE_ZERO(v16)
       RUY_MAKE_ZERO(v18)
+      "add x3, x3, x4, lsl #1\n"
       "str q20, [x3, #0]\n"
-      "add x3, x3, x4\n"
-      "str q22, [x3, #0]\n"
-      "add x3, x3, x4\n"
+      "str q22, [x3, x4]\n"
       RUY_MAKE_ZERO(v20)
       RUY_MAKE_ZERO(v22)
 
@@ -780,16 +777,13 @@ void BinaryKernelNeonOutOfOrder64BP4x4(
       // Write our values to the destination described by
       // (x3 address, x4 stride).
       "str q24, [x3, #0]\n"
-      "add x3, x3, x4\n"
       RUY_MAKE_ZERO(v24)
-      "str q25, [x3, #0]\n"
-      "add x3, x3, x4\n"
+      "str q25, [x3, x4]\n"
+      "add x3, x3, x4, lsl #1\n"
       RUY_MAKE_ZERO(v25)
       "str q26, [x3, #0]\n"
-      "add x3, x3, x4\n"
       RUY_MAKE_ZERO(v26)
-      "str q27, [x3, #0]\n"
-      "add x3, x3, x4\n"
+      "str q27, [x3, x4]\n"
       RUY_MAKE_ZERO(v27)
 
       // If all of the 4x4 block fits, we just finished writing it to the
