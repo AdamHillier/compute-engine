@@ -13,12 +13,14 @@ def HasOneUse : Constraint<CPred<"$0->hasOneUse()">>;
 multiclass FuseAddOrSubWithBConv2D<dag binaryOp> {
   def : Pat<(binaryOp (TF_LqceBconv2d64Op:$output $input, $filter,
                           $post_activation_multiplier, (ConstantOp F32ElementsAttr:$post_activation_bias), $strides,
-                          $padding, $pad_values, $data_format, $dilations, $filter_format),
+                          $padding, $pad_values, $data_format, $dilations, $filter_format,
+                          $read_bitpacked_input, $write_bitpacked_output),
                       (ConstantOp F32ElementsAttr:$value), TFL_AF_None),
             (TF_LqceBconv2d64Op $input, $filter, $post_activation_multiplier,
                           (binaryOp (ConstantOp $post_activation_bias), (ConstantOp $value), TFL_AF_None),
                           $strides, $padding, $pad_values, $data_format,
-                          $dilations, $filter_format),
+                          $dilations, $filter_format, $read_bitpacked_input,
+                          $write_bitpacked_output),
             [(HasOneUse $output)]>;
 }
 foreach binaryOp = [TFL_AddOp, TFL_SubOp] in
@@ -30,7 +32,8 @@ multiclass FuseMulOrDivWithBConv2D<dag binaryOp> {
                         (ConstantOp F32ElementsAttr:$post_activation_multiplier),
                         (ConstantOp F32ElementsAttr:$post_activation_bias),
                         $strides, $padding, $pad_values, $data_format,
-                        $dilations, $filter_format),
+                        $dilations, $filter_format, $read_bitpacked_input,
+                        $write_bitpacked_output),
                       (ConstantOp F32ElementsAttr:$value), $TFL_AF_None),
             (TF_LqceBconv2d64Op $input, $filter,
                         (binaryOp (ConstantOp $post_activation_multiplier),
@@ -38,7 +41,8 @@ multiclass FuseMulOrDivWithBConv2D<dag binaryOp> {
                         (binaryOp (ConstantOp $post_activation_bias),
                                   (ConstantOp $value), TFL_AF_None),
                         $strides, $padding, $pad_values, $data_format,
-                        $dilations, $filter_format),
+                        $dilations, $filter_format, $read_bitpacked_input,
+                        $write_bitpacked_output),
          [(HasOneUse $conv_output)]>;
 }
 

@@ -56,3 +56,16 @@ func @fuse_mul_into_bconv2d(%arg0: tensor<256x32x32x3xf32>, %arg1: tensor<16x3x3
   // CHECK-NEXT: %0 = "tf.LqceBconv2d64"(%arg0, %arg1, %cst, %cst_0)
   // CHECK-NEXT: return %0
 }
+
+// CHECK-LABEL: @bitpack_between_two_bconv2ds
+func @bitpack_between_two_bconv2ds(%arg0: tensor<256x32x32x3xf32>, %arg1: tensor<16x3x3x3xf32>, %arg2: tensor<16x3x3x16xf32>) -> tensor<256x28x28x16xf32> {
+  %post_activation_bias = constant dense<1.5> : tensor<16xf32>
+  %post_activation_multiplier = constant dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]> : tensor<16xf32>
+  %0 = "tf.LqceBconv2d64"(%arg0, %arg1, %post_activation_multiplier, %post_activation_bias) {data_format = "NHWC", dilations = [1, 1, 1, 1], filter_format = "OHWI", padding = "VALID", strides = [1, 1, 1, 1]} : (tensor<256x32x32x3xf32>, tensor<16x3x3x3xf32>, tensor<16xf32>, tensor<16xf32>) -> tensor<256x30x30x16xf32>
+  %1 = "tf.LqceBconv2d64"(%0, %arg2, %post_activation_multiplier, %post_activation_bias) {data_format = "NHWC", dilations = [1, 1, 1, 1], filter_format = "OHWI", padding = "VALID", strides = [1, 1, 1, 1]} : (tensor<256x30x30x16xf32>, tensor<16x3x3x16xf32>, tensor<16xf32>, tensor<16xf32>) -> tensor<256x28x28x16xf32>
+
+  return %1 : tensor<256x28x28x16xf32>
+
+  // CHECK: write_bitpacked_output = true
+  // CHECK-NEXT: read_bitpacked_input = true
+}
