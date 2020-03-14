@@ -14,6 +14,15 @@ struct OptimizeLCE : public FunctionPass<OptimizeLCE> {
   void runOnFunction() override;
 };
 
+bool IsConstantValue(Attribute values, float expected_value) {
+  if (!values.isa<DenseElementsAttr>()) return false;
+
+  for (auto value : values.cast<DenseElementsAttr>().getValues<float>()) {
+    if (value != expected_value) return false;
+  }
+  return true;
+}
+
 #include "larq_compute_engine/mlir/transforms/generated_optimize.inc"
 
 
@@ -45,7 +54,8 @@ struct SetBconvReadWriteBitpacked : public OpRewritePattern<TF::LqceBconv2d64Op>
       bconv_input_op.dilations(),
       rewriter.getStringAttr(bconv_input_op.filter_format()),
       rewriter.getBoolAttr(bconv_input_op.read_bitpacked_input()),
-      /*write_bitpacked_output=*/rewriter.getBoolAttr(true)
+      /*write_bitpacked_output=*/rewriter.getBoolAttr(true),
+      rewriter.getStringAttr(bconv_input_op.activation())
     );
 
     rewriter.replaceOpWithNewOp<TF::LqceBconv2d64Op>(
@@ -61,7 +71,8 @@ struct SetBconvReadWriteBitpacked : public OpRewritePattern<TF::LqceBconv2d64Op>
       bconv_op.dilations(),
       rewriter.getStringAttr(bconv_op.filter_format()),
       /*read_bitpacked_input=*/rewriter.getBoolAttr(true),
-      rewriter.getBoolAttr(bconv_op.write_bitpacked_output())
+      rewriter.getBoolAttr(bconv_op.write_bitpacked_output()),
+      rewriter.getStringAttr(bconv_op.activation())
     );
 
     return matchSuccess();
@@ -93,6 +104,5 @@ std::unique_ptr<OpPassBase<FuncOp>> CreateOptimizeLCEPass() {
 
 static PassRegistration<OptimizeLCE> pass(
     "tfl-optimize-lce", "Optimize within the TensorFlow Lite dialect");
-
 }  // namespace TFL
 }  // namespace mlir

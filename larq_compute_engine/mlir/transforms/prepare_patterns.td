@@ -35,7 +35,8 @@ def : Pat<(TF_Conv2DOp (TF_LqceBsignOp $input), (ConstantOp $filter), $strides, 
             $strides, $padding, ConstantAttr<I32Attr, "0">, $data_format,
             $dilations, ConstantAttr<StrAttr, "OHWI">,
             ConstantAttr<BoolAttr, "false">,
-            ConstantAttr<BoolAttr, "false">),
+            ConstantAttr<BoolAttr, "false">,
+            TFL_AF_None),
           [(BinaryFilter $filter)], (addBenefit 90)>;
 
 def ConstFloatValueIsOne : Constraint<
@@ -60,7 +61,8 @@ def : Pat<(TF_Conv2DOp: $output
             $dilations,
             ConstantAttr<StrAttr, "OHWI">,
             ConstantAttr<BoolAttr, "false">,
-            ConstantAttr<BoolAttr, "false">),
+            ConstantAttr<BoolAttr, "false">,
+            TFL_AF_None),
           [(BinaryFilter $filter),
            (ConstFloatValueIsOne $pad_values),
            (SamePadding $paddings, $input, $output, $strides)],
