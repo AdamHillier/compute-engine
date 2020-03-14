@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdint.h>
 #include <ctime>
 #include <functional>
 #include <memory>
@@ -26,10 +27,13 @@
 #include "absl/strings/substitute.h"
 #include "flatbuffers/flexbuffers.h"  // TF:flatbuffers
 #include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/padding.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/model.h"
+
+#include "larq_compute_engine/tflite/kernels/utils.h"
 
 // using namespace tflite;
 
@@ -162,6 +166,7 @@ typedef std::tuple<std::array<int, 4>,  // input shape [BHWI]
                    std::array<int, 2>,  // strides [HW]
                    std::array<int, 2>,  // dilations [HW]
                    Padding,             // paddding
+                   bool,                // read bitpacked input flag
                    int,                 // number of threads
                    std::pair<std::string, register_function>  // registration
                    >
@@ -183,9 +188,10 @@ struct TestParam {
         dilation_height_factor(::testing::get<3>(param_tuple)[0]),
         dilation_width_factor(::testing::get<3>(param_tuple)[1]),
         padding(::testing::get<4>(param_tuple)),
-        num_threads(::testing::get<5>(param_tuple)),
-        kernel_name(::testing::get<6>(param_tuple).first),
-        registration(::testing::get<6>(param_tuple).second) {}
+        read_bitpacked_input(::testing::get<5>(param_tuple)),
+        num_threads(::testing::get<6>(param_tuple)),
+        kernel_name(::testing::get<7>(param_tuple).first),
+        registration(::testing::get<7>(param_tuple).second) {}
 
   static std::string TestNameSuffix(
       const ::testing::TestParamInfo<TestParamTuple>& info) {
@@ -202,16 +208,19 @@ struct TestParam {
     param_dilation_oss << param.dilation_height_factor << "x"
                        << param.dilation_width_factor;
 
+    string param_bitpacked_input =
+        param.read_bitpacked_input ? "read_bitpacked" : "read_fp";
+
     const int pad_values = (param.padding == Padding_ONE ? 1 : 0);
     const Padding padding =
         (param.padding == Padding_ONE ? Padding_SAME : param.padding);
 
     // WARNING: substitute accepts only 11 arguments
-    return absl::Substitute("Op$0_I$1_K$2_P$3_PV$4_S$5_D$6_T$7",
-                            param.kernel_name, param_input_oss.str(),
-                            param_filter_oss.str(), GetPaddingName(padding),
-                            pad_values, param_strides_oss.str(),
-                            param_dilation_oss.str(), param.num_threads);
+    return absl::Substitute(
+        "Op$0_I$1_K$2_P$3_PV$4_S$5_D$6_$7_T$8", param.kernel_name,
+        param_input_oss.str(), param_filter_oss.str(), GetPaddingName(padding),
+        pad_values, param_strides_oss.str(), param_dilation_oss.str(),
+        param_bitpacked_input, param.num_threads);
   }
 
   int input_batch_count = 1;
@@ -231,6 +240,8 @@ struct TestParam {
 
   Padding padding = Padding_VALID;
 
+  bool read_bitpacked_input = false;
+
   int num_threads = 1;
 
   std::string kernel_name = "Unknown";
@@ -244,7 +255,8 @@ class BaseBConv2DOpModel : public SingleOpModel {
                      int stride_width = 1, int stride_height = 1,
                      enum Padding padding = Padding_VALID, int pad_values = 0,
                      int dilation_width_factor = 1,
-                     int dilation_height_factor = 1, int num_threads = -1) {
+                     int dilation_height_factor = 1,
+                     bool read_bitpacked_input = false, int num_threads = -1) {
     input_ = AddInput(input);
     filter_ = AddInput(filter);
     output_ = AddOutput(output);
@@ -271,6 +283,7 @@ class BaseBConv2DOpModel : public SingleOpModel {
       fbb.String("filter_format", "OHWI");
       fbb.String("padding", GetPaddingName(padding));
       fbb.Int("pad_values", pad_values);
+      fbb.Bool("read_bitpacked_input", read_bitpacked_input);
     });
     fbb.Finish();
     SetCustomOp("LqceBconv2d", fbb.GetBuffer(), registration);
@@ -304,6 +317,7 @@ class BConv2DOpModel : public BaseBConv2DOpModel {
   }
 
   std::vector<float> GetOutput() { return ExtractVector<float>(output_); }
+  std::vector<int> GetOutputShape() { return GetTensorShape(output_); }
 };
 
 const auto kKernelMap = new std::map<string, register_function>({
@@ -356,6 +370,27 @@ MATCHER_P(FloatNearPointwise, tol, "Out of range") {
           std::get<0>(arg) < std::get<1>(arg) + tol);
 }
 
+template <typename T, typename TBitpacked>
+void bitpack_input(const RuntimeShape& input_shape, const T* input_data,
+                   std::vector<T>& output_data, int& packed_output_depth) {
+  // `packbits_tensor()` requires a vector of TBitpacked, so we bitpack into a
+  // temporary and then copy the data into `output_data`.
+
+  std::vector<TBitpacked> input_data_bp;
+  RuntimeShape packed_input_shape;
+
+  ::compute_engine::tflite::packbits_tensor<T, TBitpacked>(
+      input_shape, input_data, packed_input_shape, input_data_bp);
+
+  // Copy the packed data into `output_data`.
+  output_data.resize(input_data_bp.size() * (sizeof(TBitpacked) / sizeof(T)));
+  std::memcpy(output_data.data(), input_data_bp.data(),
+              input_data_bp.size() * sizeof(TBitpacked));
+
+  packed_output_depth =
+      (sizeof(TBitpacked) / sizeof(T)) * packed_input_shape.Dims(3);
+}
+
 TEST_P(BConv2DOpTest, SimpleTest) {
   const TestParam param(GetParam());
 
@@ -371,6 +406,7 @@ TEST_P(BConv2DOpTest, SimpleTest) {
   const int stride_width = param.stride_width;
   const int dilation_height_factor = param.dilation_height_factor;
   const int dilation_width_factor = param.dilation_width_factor;
+  const bool read_bitpacked_input = param.read_bitpacked_input;
   const Padding padding = param.padding;
   const int num_threads = param.num_threads;
 
@@ -387,7 +423,7 @@ TEST_P(BConv2DOpTest, SimpleTest) {
       filter_height * filter_width * input_depth * filter_count;
 
   using T = float;
-  std::vector<T> input_data, padded_input_data, filters_data;
+  std::vector<T> input_data, builtin_input_data, lce_input_data, filters_data;
   std::vector<T> channel_multipliers;
   std::vector<T> post_activation_multiplier_data, post_activation_bias_data,
       bias_data;
@@ -455,9 +491,28 @@ TEST_P(BConv2DOpTest, SimpleTest) {
                 ElementsAreArray(
                     {1, padded_input_height, padded_input_width, input_depth}));
 
-    padded_input_data = padop.GetOutput();
+    builtin_input_data = padop.GetOutput();
   } else {
-    padded_input_data = input_data;
+    builtin_input_data = input_data;
+  }
+
+  int packed_input_depth;
+
+  if (read_bitpacked_input) {
+    RuntimeShape input_shape{input_batch_count, input_height, input_width,
+                             input_depth};
+    if (registration == compute_engine::tflite::Register_BCONV_2D64) {
+      bitpack_input<T, std::uint64_t>(input_shape, input_data.data(),
+                                      lce_input_data, packed_input_depth);
+    } else if (registration == compute_engine::tflite::Register_BCONV_2D32) {
+      bitpack_input<T, std::uint32_t>(input_shape, input_data.data(),
+                                      lce_input_data, packed_input_depth);
+    } else {
+      assert(false);
+    }
+  } else {
+    lce_input_data = input_data;
+    packed_input_depth = input_depth;
   }
 
   // Fuse the multipliers to the filters, just as tflite would do it
@@ -477,13 +532,14 @@ TEST_P(BConv2DOpTest, SimpleTest) {
   BConv2DOpModel m_lce(
       registration,
       {TensorType_FLOAT32,
-       {input_batch_count, input_height, input_width, input_depth}},
+       {input_batch_count, input_height, input_width, packed_input_depth}},
       {TensorType_FLOAT32,
        {filter_count, filter_height, filter_width, input_depth}},
       {TensorType_FLOAT32, {}}, stride_width, stride_height, bconv_padding,
-      pad_values, dilation_width_factor, dilation_height_factor, num_threads);
+      pad_values, dilation_width_factor, dilation_height_factor,
+      read_bitpacked_input, num_threads);
 
-  m_lce.SetInput(input_data);
+  m_lce.SetInput(lce_input_data);
   m_lce.SetFilter(filters_data);
   m_lce.SetPostActivationMultiplier(post_activation_multiplier_data);
   m_lce.SetPostActivationBias(post_activation_bias_data);
@@ -501,7 +557,7 @@ TEST_P(BConv2DOpTest, SimpleTest) {
       stride_width, stride_height, builtin_padding, ActivationFunctionType_NONE,
       dilation_width_factor, dilation_height_factor, num_threads);
 
-  m_builtin.SetInput(padded_input_data);
+  m_builtin.SetInput(builtin_input_data);
   m_builtin.SetFilter(filters_data);
   m_builtin.SetBias(bias_data);
   m_builtin.Invoke();
@@ -534,6 +590,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(std::array<int, 2>{1, 1},
                           std::array<int, 2>{3, 2}),  // dilation height/width
         ::testing::Values(Padding_VALID, Padding_SAME, Padding_ONE),  // padding
+        ::testing::Bool(),        // read bitpacked input
         ::testing::Values(1, 2),  // number of threads
         ::testing::ValuesIn(BConv2DOpTest::GetKernelsTuples(*kKernelMap))),
     TestParam::TestNameSuffix);

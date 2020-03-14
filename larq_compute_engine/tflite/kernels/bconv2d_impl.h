@@ -70,12 +70,15 @@ inline void BConv2D(const ConvParams& params, const RuntimeShape& input_shape,
                     const RuntimeShape& output_shape, T* output_data,
                     const RuntimeShape& im2col_shape, T* im2col_data,
                     bool bitpack_before_im2col, T* padding_buffer,
-                    const int pad_value,
+                    const int pad_value, const bool read_bitpacked_input,
+                    const bool write_bitpacked_output,
                     CpuBackendContext* cpu_backend_context) {
   TF_LITE_ASSERT_EQ(input_shape.DimensionsCount(), 4);
   TF_LITE_ASSERT_EQ(filter_shape.DimensionsCount(), 4);
   TF_LITE_ASSERT_EQ(output_shape.DimensionsCount(), 4);
-  TF_LITE_ASSERT_EQ(input_shape.Dims(3), filter_shape.Dims(3));
+  TF_LITE_ASSERT(read_bitpacked_input ||
+                 input_shape.Dims(3) == filter_shape.Dims(3));
+  TF_LITE_ASSERT(!read_bitpacked_input || bitpack_before_im2col);
 
   gemmlowp::ScopedProfilingLabel label("BConv2D");
 
@@ -109,29 +112,51 @@ inline void BConv2D(const ConvParams& params, const RuntimeShape& input_shape,
   int m = 0;
   int k = 0;
 
-  // Buffer for bitpacked input data
-  static std::vector<TBitpacked> input_data_bp;
-
   if (bitpack_before_im2col) {
-    // Input tensor has this shape which we bitpack along the channels dimension
-    //  [batch, input height, input width, channels]
-    RuntimeShape packed_input_shape;
-    packbits_tensor(input_shape, input_data, packed_input_shape, input_data_bp);
-
-    // Filter tensor was already bitpacked. Only get the new shape
+    // The filter tensor was already bitpacked. Only get the new shape.
     RuntimeShape packed_filter_shape = packed_shape<TBitpacked>(filter_shape);
 
-    // Get the im2col data buffer
+    // Get the im2col data buffer.
     TBitpacked* packed_im2col_data = reinterpret_cast<TBitpacked*>(im2col_data);
 
     RuntimeShape result_shape;
-    im2col<TBitpacked>(params, packed_input_shape, input_data_bp.data(),
-                       packed_filter_shape, output_shape, im2col_shape,
-                       packed_im2col_data, result_shape, &rhs_data);
+
+    if (read_bitpacked_input) {
+      RuntimeShape packed_input_shape = input_shape;
+
+      // The input is bitpacked along the channels dimension with a datatype
+      // that might not be the same size (i.e. sizeof(T) != sizeof(TBitpacked)),
+      // so we need to correct the last dimension of the packed input shape.
+      packed_input_shape.SetDim(
+          3, packed_input_shape.Dims(3) * sizeof(T) / sizeof(TBitpacked));
+
+      const TBitpacked* input_data_bp =
+          reinterpret_cast<const TBitpacked*>(input_data);
+
+      im2col<TBitpacked>(params, packed_input_shape, input_data_bp,
+                         packed_filter_shape, output_shape, im2col_shape,
+                         packed_im2col_data, result_shape, &rhs_data);
+    } else {
+      // Buffer for bitpacked input data
+      static std::vector<TBitpacked> input_data_bp;
+
+      // The input tensor has this shape which we bitpack along the channels
+      // dimension [batch, input height, input width, channels].
+      RuntimeShape packed_input_shape;
+
+      packbits_tensor(input_shape, input_data, packed_input_shape,
+                      input_data_bp);
+
+      im2col<TBitpacked>(params, packed_input_shape, input_data_bp.data(),
+                         packed_filter_shape, output_shape, im2col_shape,
+                         packed_im2col_data, result_shape, &rhs_data);
+    }
 
     k = result_shape.Dims(3);
     m = FlatSizeSkipDim(result_shape, 3);
   } else {  // bitpack after im2col
+    // Buffer for bitpacked input data
+    static std::vector<TBitpacked> input_data_bp;
 
     RuntimeShape result_shape;
     const T* result_data;

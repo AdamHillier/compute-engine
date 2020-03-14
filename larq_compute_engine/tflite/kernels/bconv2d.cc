@@ -80,11 +80,15 @@ typedef struct {
   std::vector<std::uint8_t> bitpacked_weights_buffer;
   bool is_weight_bitpacked = false;
 
+  bool read_bitpacked_input = false;
+  bool write_bitpacked_output = false;
+
 } TfLiteBConv2DParams;
 
 inline void decide_bitpack_before_im2col(TfLiteBConv2DParams* conv_params,
                                          const int bitwidth) {
-  if (conv_params->channels_in >= bitwidth / 4) {
+  if (conv_params->read_bitpacked_input ||
+      conv_params->channels_in >= bitwidth / 4) {
     conv_params->bitpack_before_im2col = true;
   } else {
     conv_params->bitpack_before_im2col = false;
@@ -137,14 +141,16 @@ void* Init(TfLiteContext* context, const char* buffer, size_t length) {
     context->ReportError(context, "Invalid padding attribute.");
     return conv_params;
   }
-
   conv_params->pad_value =
       m["pad_values"].IsNull() ? 0 : m["pad_values"].AsInt64();
-
   if (conv_params->pad_value != 0 && conv_params->pad_value != 1) {
     context->ReportError(context, "Attribute pad_values must be 0 or 1.");
     return conv_params;
   }
+
+  // Reading bitpacking flags
+  conv_params->read_bitpacked_input = m["read_bitpacked_input"].AsBool();
+  conv_params->write_bitpacked_output = m["write_bitpacked_output"].AsBool();
 
   return conv_params;
 }
@@ -183,7 +189,10 @@ TfLiteStatus Prepare(KernelType kernel_type, const int bitwidth,
   conv_params->batch = input->dims->data[0];
   conv_params->input_height = input->dims->data[1];
   conv_params->input_width = input->dims->data[2];
-  conv_params->channels_in = input->dims->data[3];
+
+  // Get `channels_in` from the filter dimensions because if the input is
+  // bitpacked the input depth will be wrong.
+  conv_params->channels_in = filter->dims->data[3];
 
   // reading the filter dimensions
   // only OHWI layout is supported for filters
@@ -193,7 +202,6 @@ TfLiteStatus Prepare(KernelType kernel_type, const int bitwidth,
   conv_params->channels_out = filter->dims->data[0];
   conv_params->filter_height = filter->dims->data[1];
   conv_params->filter_width = filter->dims->data[2];
-  TF_LITE_ENSURE_EQ(context, conv_params->channels_in, filter->dims->data[3]);
 
   TF_LITE_ENSURE_EQ(context, post_activation_multiplier->dims->data[0],
                     conv_params->channels_out);
@@ -431,6 +439,7 @@ void EvalOpt(TfLiteContext* context, TfLiteNode* node,
       GetTensorData<T>(output), GetTensorShape(im2col),
       GetTensorData<T>(im2col), params->bitpack_before_im2col,
       params->padding_buffer.data(), params->pad_value,
+      params->read_bitpacked_input, params->write_bitpacked_output,
       CpuBackendContext::GetFromContext(context));
 }
 
