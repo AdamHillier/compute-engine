@@ -15,8 +15,8 @@
    ==============================================================================*/
 
 #include <gtest/gtest.h>
-
 #include <stdint.h>
+
 #include <ctime>
 #include <functional>
 #include <memory>
@@ -27,14 +27,13 @@
 #include "absl/memory/memory.h"
 #include "absl/strings/substitute.h"
 #include "flatbuffers/flexbuffers.h"  // TF:flatbuffers
+#include "larq_compute_engine/tflite/kernels/utils.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/padding.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/model.h"
-
-#include "larq_compute_engine/tflite/kernels/utils.h"
 
 // using namespace tflite;
 
