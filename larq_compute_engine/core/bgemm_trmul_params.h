@@ -49,8 +49,8 @@ void PopulateBinaryTrMulParams(ruy::TrMulParams* params) {
 
   params->path = ThePath;
 
-  params->cache_friendly_traversal_threshold =
-      Spec::cache_friendly_traversal_threshold();
+  params->local_data_cache_size = Spec::local_data_cache_size();
+  params->shared_data_cache_size = Spec::shared_data_cache_size();
 
   CreatePackedMatrix<LhsScalar, PackedLhsScalar>(
       Side::kLhs, ToKernelLayout<LhsKernelLayout>(), params);
@@ -173,7 +173,7 @@ void PopulateBinaryTrMulParamsAllCompiledPaths(ruy::Path the_path,
                              Spec>::Search(the_path, params);
 }
 
-template <Path CompiledPaths, typename LhsScalar, typename RhsScalar,
+template <ruy::Path CompiledPaths, typename LhsScalar, typename RhsScalar,
           typename DstScalar, typename Spec>
 void CreateBinaryTrMulParams(const Matrix<LhsScalar>& lhs,
                              const Matrix<RhsScalar>& rhs, const Spec& spec,

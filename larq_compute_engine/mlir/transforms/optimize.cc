@@ -1,6 +1,6 @@
 #include "larq_compute_engine/mlir/ir/lce_ops.h"
 #include "larq_compute_engine/mlir/transforms/utils.h"
-#include "mlir/Dialect/StandardOps/Ops.h"
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/Pass/Pass.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 
@@ -31,11 +31,11 @@ struct SetBconvReadWriteBitpacked
 
   PatternMatchResult matchAndRewrite(TF::LqceBconv2d64Op bconv_op,
                                      PatternRewriter& rewriter) const override {
-    Value* bconv_input = bconv_op.input();
-    if (!bconv_input->hasOneUse()) return matchFailure();
+    Value bconv_input = bconv_op.input();
+    if (!bconv_input.hasOneUse()) return matchFailure();
 
     auto bconv_input_op =
-        dyn_cast_or_null<TF::LqceBconv2d64Op>(bconv_input->getDefiningOp());
+        dyn_cast_or_null<TF::LqceBconv2d64Op>(bconv_input.getDefiningOp());
     if (!bconv_input_op) return matchFailure();
 
     if (bconv_input_op.write_bitpacked_output() &&
