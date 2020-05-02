@@ -81,7 +81,7 @@ template <>
 struct BgemmKernel<ruy::Path::kNeon, std::uint64_t, std::uint64_t, float,
                    BinaryBasicSpec<std::int32_t, float>> {
   Tuning tuning = Tuning::kAuto;
-  using LhsLayout = FixedKernelLayout<Order::kColMajor, 2, 4>;
+  using LhsLayout = FixedKernelLayout<Order::kColMajor, 2, 8>;
   using RhsLayout = FixedKernelLayout<Order::kColMajor, 2, 4>;
   explicit BgemmKernel(Tuning tuning_) : tuning(tuning_) {}
   void Run(const ruy::PackedMatrix<std::uint64_t>& lhs,
@@ -93,7 +93,7 @@ struct BgemmKernel<ruy::Path::kNeon, std::uint64_t, std::uint64_t, float,
         params;
     MakeBinaryKernelParams(lhs, rhs, spec, start_row, start_col, end_row,
                            end_col, dst, &params);
-    BinaryKernelNeonOutOfOrder64BP4x4(params);
+    BinaryKernelNeonOutOfOrder64BP8x4(params);
   }
 };
 

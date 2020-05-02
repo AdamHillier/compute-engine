@@ -377,6 +377,32 @@ void test_lce_op_output(const std::vector<TOutput>& lce_output_data,
                         const std::vector<int>& builtin_output_shape,
                         const std::vector<TOutput>& builtin_output_data,
                         std::int32_t zero_point) {
+  // std::cout << "\nExpected output:\n";
+  // for (int i = 0; i < builtin_output_shape[1]; i++) {
+  //   for (int j = 0; j < builtin_output_shape[2]; j++) {
+  //     for (int k = 0; k < builtin_output_shape[3]; k++) {
+  //       std::cout << builtin_output_data.at(i * builtin_output_shape[2] *
+  //                                               builtin_output_shape[3] +
+  //                                           j * builtin_output_shape[3] + k)
+  //                 << " ";
+  //     }
+  //     std::cout << "\n";
+  //   }
+  //   std::cout << "\n";
+  // }
+  // std::cout << "\nActual output:\n";
+  // for (int i = 0; i < builtin_output_shape[1]; i++) {
+  //   for (int j = 0; j < builtin_output_shape[2]; j++) {
+  //     for (int k = 0; k < builtin_output_shape[3]; k++) {
+  //       std::cout << lce_output_data.at(i * builtin_output_shape[2] *
+  //                                           builtin_output_shape[3] +
+  //                                       j * builtin_output_shape[3] + k)
+  //                 << " ";
+  //     }
+  //     std::cout << "\n";
+  //   }
+  //   std::cout << "\n";
+  // }
   EXPECT_THAT(lce_output_data, ::testing::Pointwise(FloatNearPointwise(1e-4),
                                                     builtin_output_data));
 }

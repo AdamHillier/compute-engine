@@ -1,6 +1,8 @@
 #ifndef COMPUTE_EGNINE_TFLITE_KERNELS_BGEMM_KERNELS_COMMON_H_
 #define COMPUTE_EGNINE_TFLITE_KERNELS_BGEMM_KERNELS_COMMON_H_
 
+#include <iostream>
+
 #include "larq_compute_engine/core/bconv2d_output_transform.h"
 #include "tensorflow/lite/experimental/ruy/kernel_common.h"
 
