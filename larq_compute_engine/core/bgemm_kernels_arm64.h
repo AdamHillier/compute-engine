@@ -584,7 +584,7 @@ void BinaryKernelNeonOutOfOrder32BP4x4(
 #define RUY_OFFSET_FLAGS 92
 
 template <typename Params>
-void CheckOffsetsInKernelParams64BP8x4(const Params&) {
+void CheckOffsetsInKernelParams64BP8x8(const Params&) {
   static_assert(offsetof(Params, lhs_base_ptr) == RUY_OFFSET_LHS_BASE_PTR, "");
   static_assert(offsetof(Params, rhs_base_ptr) == RUY_OFFSET_RHS_BASE_PTR, "");
   static_assert(offsetof(Params, dst_base_ptr) == RUY_OFFSET_DST_BASE_PTR, "");
@@ -613,39 +613,35 @@ void CheckOffsetsInKernelParams64BP8x4(const Params&) {
 
 // The asm kernel below has the following NEON register allocation:
 //
-// v24 -- v27 are int16 accumulators.
+// v20 -- v27 are int16 accumulators.
 // During accumulation, v0 -- v7 are used to load data from LHS and
-// v8 -- v11 from RHS:
+// v8 -- v15 from RHS:
 //
-//                                     int64 RHS 2x4 block
+//                                     int64 RHS 2x8 block
 //                           /--------------------------------------\
-//                           | v8.d[0]         ...         v11.d[0] |
-//                           | v8.d[1]         ...         v11.d[1] |
+//                           | v8.d[0]         ...         v15.d[0] |
+//                           | v8.d[1]         ...         v15.d[1] |
 //                           \--------------------------------------/
 //      int64 LHS 8x2 block
 //      /-----------------\  /--------------------------------------\
-//      | v0.d[0] v0.d[1] |  | v24.h[0]        ...         v27.h[0] |
-//      | v1.d[0] v1.d[1] |  | v24.h[1]        ...         v27.h[1] |
-//      | v2.d[0] v2.d[1] |  | v24.h[2]        ...         v27.h[2] |
-//      | v3.d[0] v3.d[1] |  | v24.h[3]        ...         v27.h[3] |
-//      | v4.d[0] v4.d[1] |  | v24.h[4]        ...         v27.h[4] |
-//      | v5.d[0] v5.d[1] |  | v24.h[5]        ...         v27.h[5] |
-//      | v6.d[0] v6.d[1] |  | v24.h[6]        ...         v27.h[6] |
-//      | v7.d[0] v7.d[1] |  | v24.h[7]        ...         v27.h[7] |
+//      | v0.d[0] v0.d[1] |  | v20.h[0]        ...         v27.h[0] |
+//      | v1.d[0] v1.d[1] |  | v20.h[1]        ...         v27.h[1] |
+//      | v2.d[0] v2.d[1] |  | v20.h[2]        ...         v27.h[2] |
+//      | v3.d[0] v3.d[1] |  | v20.h[3]        ...         v27.h[3] |
+//      | v4.d[0] v4.d[1] |  | v20.h[4]        ...         v27.h[4] |
+//      | v5.d[0] v5.d[1] |  | v20.h[5]        ...         v27.h[5] |
+//      | v6.d[0] v6.d[1] |  | v20.h[6]        ...         v27.h[6] |
+//      | v7.d[0] v7.d[1] |  | v20.h[7]        ...         v27.h[7] |
 //      \-----------------/  \--------------------------------------/
-//                                 int16 accumulators 8x4 block
-//
-// In the RUY_OPT_MAX_STREAMING part of the kernel, this elementary step is
-// repeated two times, using additional registers for the LHS (v12 -- v19) and
-// RHS (v20 -- v23).
+//                                 int16 accumulators 8x8 block
 
 // clang-format on
 
-void BinaryKernelNeonOutOfOrder64BP8x4(
-    const BinaryKernelParams<8, 4, std::uint64_t>& params) {
-  CheckOffsetsInKernelParams64BP8x4(params);
+void BinaryKernelNeonOutOfOrder64BP8x8(
+    const BinaryKernelParams<8, 8, std::uint64_t>& params) {
+  CheckOffsetsInKernelParams64BP8x8(params);
   ruy::profiler::ScopeLabel label(
-      "Binary Kernel (8x4) 64BP (kNeon, optimized for out-of-order cores)");
+      "Binary Kernel (8x8) 64BP (kNeon, optimized for out-of-order cores)");
 
   std::uint64_t* lhs_col_ptr = const_cast<std::uint64_t*>(params.lhs_base_ptr);
   std::uint64_t* rhs_col_ptr = const_cast<std::uint64_t*>(params.rhs_base_ptr);
@@ -656,6 +652,12 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
   float* dst_ptr = dst_col_ptr;
   int row = params.start_row;
   int col = params.start_col;
+
+  // for (int i = 0; i < 8; i++) {
+  //   for (int j = 0; j < 8; j++) {
+  //     params.dst_tmp_buf[8 * i + j]* = 0.0f;
+  //   }
+  // }
 
   asm volatile(
 #define RUY_MAKE_ZERO(reg) "dup " #reg ".4s, wzr\n"
@@ -691,46 +693,11 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
       // destination matrix.
       "1:\n"
 
-      LCE_BMLA_HALF(v24, v8, v0, v1, v2, v3, v4, v5, v6, v7)
+      // Load the remaining 64 bytes of RHS data.
+      "ld1 {v12.2d, v13.2d, v14.2d, v15.2d}, [%[rhs_ptr]], #64\n"
 
-#if RUY_OPT_ENABLED(RUY_OPT_MAX_STREAMING)
-      "cmp w12, #8\n"
-      "blt 78f\n"
-      "and w2, w12, #-4\n"
-
-      // Load the next 128 bytes of LHS data and 64 bytes of RHS data.
-      "ld1 {v12.2d, v13.2d, v14.2d, v15.2d}, [%[lhs_ptr]], #64\n"
-      "ld1 {v16.2d, v17.2d, v18.2d, v19.2d}, [%[lhs_ptr]], #64\n"
-      "ld1 {v20.2d, v21.2d, v22.2d, v23.2d}, [%[rhs_ptr]], #64\n"
-
-      "mov w1, #4\n"
-
-      "80:\n"
-
-      // Load v8.
-      "ld1 {v8.2d}, [%[rhs_ptr]], #16\n"
-
-      LCE_BMLA_HALF_LD_RHS(v25, v9, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF_LD_RHS(v26, v10, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF_LD_ALL(v27, v11, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF_LD_RHS(v24, v20, v12, v13, v14, v15, v16, v17, v18, v19)
-      LCE_BMLA_HALF_LD_RHS(v25, v21, v12, v13, v14, v15, v16, v17, v18, v19)
-      LCE_BMLA_HALF_LD_RHS(v26, v22, v12, v13, v14, v15, v16, v17, v18, v19)
-      LCE_BMLA_HALF_LD_ALL(v27, v23, v12, v13, v14, v15, v16, v17, v18, v19)
-
-      LCE_BMLA_HALF(v24, v8, v0, v1, v2, v3, v4, v5, v6, v7)
-
-      "add w1, w1, #4\n"
-      "cmp w1, w2\n"
-      "blt 80b\n"
-
-      LCE_BMLA_HALF(v24, v20, v12, v13, v14, v15, v16, v17, v18, v19)
-      LCE_BMLA_HALF(v25, v21, v12, v13, v14, v15, v16, v17, v18, v19)
-      LCE_BMLA_HALF(v26, v22, v12, v13, v14, v15, v16, v17, v18, v19)
-      LCE_BMLA_HALF(v27, v23, v12, v13, v14, v15, v16, v17, v18, v19)
-
-      "78:\n"
-#endif
+      LCE_BMLA_HALF(v20, v8, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v21, v9, v0, v1, v2, v3, v4, v5, v6, v7)
 
       // Accumulation loop
       "cmp w1, w12\n"
@@ -738,34 +705,41 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
 
       "2:\n"
 
-      // Load v8.
-      "ld1 {v8.2d}, [%[rhs_ptr]], #16\n"
+      // Load v8 and v9.
+      "ld1 {v8.2d, v9.2d}, [%[rhs_ptr]], #32\n"
 
-      LCE_BMLA_HALF_LD_RHS(v25, v9, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF_LD_RHS(v26, v10, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF_LD_ALL(v27, v11, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF_LD_RHS(v22, v10, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF_LD_RHS(v23, v11, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF_LD_RHS(v24, v12, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF_LD_RHS(v25, v13, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF_LD_RHS(v26, v14, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF_LD_ALL(v27, v15, v0, v1, v2, v3, v4, v5, v6, v7)
 
       "add w1, w1, #2\n"
       "cmp w1, w12\n"
 
-      LCE_BMLA_HALF(v24, v8, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v20, v8, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v21, v9, v0, v1, v2, v3, v4, v5, v6, v7)
 
       "blt 2b\n"
 
       "79:\n"
 
-      LCE_BMLA_HALF(v25, v9, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF(v26, v10, v0, v1, v2, v3, v4, v5, v6, v7)
-      LCE_BMLA_HALF(v27, v11, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v22, v10, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v23, v11, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v24, v12, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v25, v13, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v26, v14, v0, v1, v2, v3, v4, v5, v6, v7)
+      LCE_BMLA_HALF(v27, v15, v0, v1, v2, v3, v4, v5, v6, v7)
 
-      // End of accumulation. The registers v24 -- v27 contain the final int16
-      // accumulator values of the current 8x4 destination block.
+      // End of accumulation. The registers v20 -- v27 contain the final int16
+      // accumulator values of the current 8x8 destination block.
 
       // Logic to advance to the next block in preparation for the next
       // iteration of the main loop. For now, we only want to compute the LHS
-      // and RHS data pointers, lhs_col_ptr and rhs_col_ptr. We are not yet
-      // ready to update the values of row and col, as we still need the current
-      // values for the rest of the work on the current block.
+      // and RHS data pointers `lhs_col_ptr` and `rhs_col_ptr`. We are not yet
+      // ready to update the values of `row` and `col`, as we still need the
+      // current values for the rest of the work on the current block.
 
       "cmp %w[row], w7\n"  // Have we finished the last row?
       "bge 4f\n"           // If finished last row, go to 4.
@@ -783,8 +757,7 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
       "cmp %w[col], w8\n"  // Have we finished the last column?
       "bge 5f\n" // If yes, just carry on without updating the column pointer.
       // Not finished last column: then advance to next column.
-      // x10 is the RHS stride
-      "add %[rhs_col_ptr], %[rhs_col_ptr], x10, lsl #2\n"
+      "add %[rhs_col_ptr], %[rhs_col_ptr], x10, lsl #3\n" // x10 is the RHS stride
       "5:\n"
 
       // Set the LHS and RHS data pointers to the start of the columns just
@@ -795,39 +768,32 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
       // Load some parameters needed for the end work on current block.
       "ldrb w4, [%[params], #" RUY_STR(RUY_OFFSET_FLAGS) "]\n"
 
-      // Load backtransform add (duplicate 4 times into v13)
-      "ldr w1, [%[params], #" RUY_STR(RUY_OFFSET_BACKTRANSFORM_ADD) "]\n"
-      "dup v13.4s, w1 \n"
-
-      // Load multiplication bias.
-      "ldr x1, [%[params], #" RUY_STR(RUY_OFFSET_POST_ACTIVATION_MULTIPLIER) "]\n"
-      // Offset these base pointers as needed given the current row, col.
-      "add x2, x1, %x[row], lsl #2\n"
-      "tst w4, #" RUY_STR(RUY_ASM_FLAG_HAS_BIAS) "\n"
-      "csel x1, x1, x2, eq\n"
-      // Load 8 bias-multiplication values.
-      "ld1 {v14.4s, v15.4s}, [x1], #32\n"
-
-      // Load addition bias.
-      "ldr x1, [%[params], #" RUY_STR(RUY_OFFSET_POST_ACTIVATION_BIAS) "]\n"
-      // Offset these base pointers as needed given the current row, col.
-      "add x2, x1, %x[row], lsl #2\n"
-      "tst w4, #" RUY_STR(RUY_ASM_FLAG_HAS_BIAS) "\n"
-      "csel x1, x1, x2, eq\n"
-      // Load 8 bias-addition values.
-      "ld1 {v16.4s, v17.4s}, [x1], #32\n"
-
       // Now that we know what LHS and RHS data the next iteration of the main
       // loop will need to load, we start loading the first 128 bytes of the LHS
       // and 64 bytes of the RHS into v0 -- v7 and v8 -- v11 as we don't need
-      // them anymore in the rest of the work on the current block.
+      // them anymore in the rest of the work on the current block. 64 bytes of
+      // RHS data is only the first half, but we don't have enough free
+      // registers at this point to load it all.
       "ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [%[lhs_ptr]], #64\n"
       "ld1 {v4.2d, v5.2d, v6.2d, v7.2d}, [%[lhs_ptr]], #64\n"
       "ld1 {v8.2d, v9.2d, v10.2d, v11.2d}, [%[rhs_ptr]], #64\n"
 
+      // Load backtransform add (in parallel with applying the
+      // back-transformation).
+      "ldr w1, [%[params], #" RUY_STR(RUY_OFFSET_BACKTRANSFORM_ADD) "]\n"
+
       // Perform the back-transformation with 'unsigned shift left long'
       // instructions; this performs the necessary left shift and extends the
       // result, so we get a int16 -> int32 transformation for free.
+      "ushll v12.4s, v20.4h, #1\n"
+      "ushll2 v13.4s, v20.8h, #1\n"
+      "ushll v14.4s, v21.4h, #1\n"
+      "ushll2 v15.4s, v21.8h, #1\n"
+      "ushll v16.4s, v22.4h, #1\n"
+      "ushll2 v17.4s, v22.8h, #1\n"
+      "ushll v18.4s, v23.4h, #1\n"
+      "ushll2 v19.4s, v23.8h, #1\n"
+      "dup v28.4s, w1\n"  // Duplicate `backtransform_add` four times into v28.
       "ushll v20.4s, v24.4h, #1\n"
       "ushll2 v21.4s, v24.8h, #1\n"
       "ushll v22.4s, v25.4h, #1\n"
@@ -839,100 +805,165 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
 
       // Load the `clamp_min` bound (in parallel with applying the sub).
       "ldr w2, [%[params], #" RUY_STR(RUY_OFFSET_CLAMP_MIN) "]\n"
-      "dup v12.4s, w2\n"  // clamp_min
 
-      "sub v20.4s, v13.4s, v20.4s\n"
-      "sub v21.4s, v13.4s, v21.4s\n"
-      "sub v22.4s, v13.4s, v22.4s\n"
-      "sub v23.4s, v13.4s, v23.4s\n"
-      "sub v24.4s, v13.4s, v24.4s\n"
-      "sub v25.4s, v13.4s, v25.4s\n"
-      "sub v26.4s, v13.4s, v26.4s\n"
-      "sub v27.4s, v13.4s, v27.4s\n"
+      "sub v12.4s, v28.4s, v12.4s\n"
+      "sub v13.4s, v28.4s, v13.4s\n"
+      "sub v14.4s, v28.4s, v14.4s\n"
+      "sub v15.4s, v28.4s, v15.4s\n"
+      "sub v16.4s, v28.4s, v16.4s\n"
+      "sub v17.4s, v28.4s, v17.4s\n"
+      "sub v18.4s, v28.4s, v18.4s\n"
+      "sub v19.4s, v28.4s, v19.4s\n"
+      "dup v30.4s, w2\n"  // Duplicate `clamp_min` four times into v30.
+      "sub v20.4s, v28.4s, v20.4s\n"
+      "sub v21.4s, v28.4s, v21.4s\n"
+      "sub v22.4s, v28.4s, v22.4s\n"
+      "sub v23.4s, v28.4s, v23.4s\n"
+      "sub v24.4s, v28.4s, v24.4s\n"
+      "sub v25.4s, v28.4s, v25.4s\n"
+      "sub v26.4s, v28.4s, v26.4s\n"
+      "sub v27.4s, v28.4s, v27.4s\n"
 
       // Load the `clamp_max` bound (in parallel with applying the `clamp_min`).
       "ldr w3, [%[params], #" RUY_STR(RUY_OFFSET_CLAMP_MAX) "]\n"
-      "dup v13.4s, w3\n"  // clamp_max
 
       // Perform the activation function, by clamping.
 
       // Apply the `clamp_min` bound.
-      "smax v20.4s, v20.4s, v12.4s\n"
-      "smax v21.4s, v21.4s, v12.4s\n"
-      "smax v22.4s, v22.4s, v12.4s\n"
-      "smax v23.4s, v23.4s, v12.4s\n"
-      "smax v24.4s, v24.4s, v12.4s\n"
-      "smax v25.4s, v25.4s, v12.4s\n"
-      "smax v26.4s, v26.4s, v12.4s\n"
-      "smax v27.4s, v27.4s, v12.4s\n"
+      "smax v12.4s, v12.4s, v30.4s\n"
+      "smax v13.4s, v13.4s, v30.4s\n"
+      "smax v14.4s, v14.4s, v30.4s\n"
+      "smax v15.4s, v15.4s, v30.4s\n"
+      "smax v16.4s, v16.4s, v30.4s\n"
+      "smax v17.4s, v17.4s, v30.4s\n"
+      "smax v18.4s, v18.4s, v30.4s\n"
+      "smax v19.4s, v19.4s, v30.4s\n"
+      "dup v31.4s, w3\n"  // Duplicate `clamp_max` four times into v31.
+      "smax v20.4s, v20.4s, v30.4s\n"
+      "smax v21.4s, v21.4s, v30.4s\n"
+      "smax v22.4s, v22.4s, v30.4s\n"
+      "smax v23.4s, v23.4s, v30.4s\n"
+      "smax v24.4s, v24.4s, v30.4s\n"
+      "smax v25.4s, v25.4s, v30.4s\n"
+      "smax v26.4s, v26.4s, v30.4s\n"
+      "smax v27.4s, v27.4s, v30.4s\n"
+
 
       // Apply the clamp_max bound.
-      "smin v20.4s, v20.4s, v13.4s\n"
-      "smin v21.4s, v21.4s, v13.4s\n"
-      "smin v22.4s, v22.4s, v13.4s\n"
-      "smin v23.4s, v23.4s, v13.4s\n"
-      "smin v24.4s, v24.4s, v13.4s\n"
-      "smin v25.4s, v25.4s, v13.4s\n"
-      "smin v26.4s, v26.4s, v13.4s\n"
-      "smin v27.4s, v27.4s, v13.4s\n"
+      "smin v12.4s, v12.4s, v31.4s\n"
+      "smin v13.4s, v13.4s, v31.4s\n"
+      "smin v14.4s, v14.4s, v31.4s\n"
+      "smin v15.4s, v15.4s, v31.4s\n"
+      "smin v16.4s, v16.4s, v31.4s\n"
+      "smin v17.4s, v17.4s, v31.4s\n"
+      "smin v18.4s, v18.4s, v31.4s\n"
+      "smin v19.4s, v19.4s, v31.4s\n"
+      "smin v20.4s, v20.4s, v31.4s\n"
+      "smin v21.4s, v21.4s, v31.4s\n"
+      "smin v22.4s, v22.4s, v31.4s\n"
+      "smin v23.4s, v23.4s, v31.4s\n"
+      "smin v24.4s, v24.4s, v31.4s\n"
+      "smin v25.4s, v25.4s, v31.4s\n"
+      "smin v26.4s, v26.4s, v31.4s\n"
+      "smin v27.4s, v27.4s, v31.4s\n"
+
+      // Load multiplication bias.
+      "ldr x1, [%[params], #" RUY_STR(RUY_OFFSET_POST_ACTIVATION_MULTIPLIER) "]\n"
+      // Offset these base pointers as needed given the current row, col.
+      "tst w4, #" RUY_STR(RUY_ASM_FLAG_HAS_BIAS) "\n"
+      "add x2, x1, %x[row], lsl #2\n"
+      "csel x1, x1, x2, eq\n"
+
+      // Load addition bias.
+      "ldr x3, [%[params], #" RUY_STR(RUY_OFFSET_POST_ACTIVATION_BIAS) "]\n"
+      // Offset these base pointers as needed given the current row, col.
+      "tst w4, #" RUY_STR(RUY_ASM_FLAG_HAS_BIAS) "\n"
+      "add x2, x3, %x[row], lsl #2\n"
+      "csel x3, x3, x2, eq\n"
 
       // Convert to single precision float.
+      "scvtf v12.4s, v12.4s\n"
+      "scvtf v13.4s, v13.4s\n"
+      "scvtf v14.4s, v14.4s\n"
+      "scvtf v15.4s, v15.4s\n"
+      "ld1 {v28.4s, v29.4s}, [x1]\n"  // Load 8 bias-multiplication values.
+      "scvtf v16.4s, v16.4s\n"
+      "scvtf v17.4s, v17.4s\n"
+      "scvtf v18.4s, v18.4s\n"
+      "scvtf v19.4s, v19.4s\n"
       "scvtf v20.4s, v20.4s\n"
       "scvtf v21.4s, v21.4s\n"
       "scvtf v22.4s, v22.4s\n"
       "scvtf v23.4s, v23.4s\n"
+      "ld1 {v30.4s, v31.4s}, [x3]\n"  // Load 8 bias-addition values.
       "scvtf v24.4s, v24.4s\n"
       "scvtf v25.4s, v25.4s\n"
       "scvtf v26.4s, v26.4s\n"
       "scvtf v27.4s, v27.4s\n"
 
       // Perform the post multiplications.
-      "fmul v20.4s, v20.4s, v14.4s\n"
-      "fmul v21.4s, v21.4s, v15.4s\n"
-      "fmul v22.4s, v22.4s, v14.4s\n"
-      "fmul v23.4s, v23.4s, v15.4s\n"
-      "fmul v24.4s, v24.4s, v14.4s\n"
-      "fmul v25.4s, v25.4s, v15.4s\n"
-      "fmul v26.4s, v26.4s, v14.4s\n"
-      "fmul v27.4s, v27.4s, v15.4s\n"
+      "fmul v12.4s, v12.4s, v28.4s\n"
+      "fmul v13.4s, v13.4s, v29.4s\n"
+      "fmul v14.4s, v14.4s, v28.4s\n"
+      "fmul v15.4s, v15.4s, v29.4s\n"
+      "fmul v16.4s, v16.4s, v28.4s\n"
+      "fmul v17.4s, v17.4s, v29.4s\n"
+      "fmul v18.4s, v18.4s, v28.4s\n"
+      "fmul v19.4s, v19.4s, v29.4s\n"
+      "fmul v20.4s, v20.4s, v28.4s\n"
+      "fmul v21.4s, v21.4s, v29.4s\n"
+      "fmul v22.4s, v22.4s, v28.4s\n"
+      "fmul v23.4s, v23.4s, v29.4s\n"
+      "fmul v24.4s, v24.4s, v28.4s\n"
+      "fmul v25.4s, v25.4s, v29.4s\n"
+      "fmul v26.4s, v26.4s, v28.4s\n"
+      "fmul v27.4s, v27.4s, v29.4s\n"
 
       // Perform the post additions.
-      "fadd v20.4s, v20.4s, v16.4s\n"
-      "fadd v21.4s, v21.4s, v17.4s\n"
-      "fadd v22.4s, v22.4s, v16.4s\n"
-      "fadd v23.4s, v23.4s, v17.4s\n"
-      "fadd v24.4s, v24.4s, v16.4s\n"
-      "fadd v25.4s, v25.4s, v17.4s\n"
-      "fadd v26.4s, v26.4s, v16.4s\n"
-      "fadd v27.4s, v27.4s, v17.4s\n"
+      "fadd v12.4s, v12.4s, v30.4s\n"
+      "fadd v13.4s, v13.4s, v31.4s\n"
+      "fadd v14.4s, v14.4s, v30.4s\n"
+      "fadd v15.4s, v15.4s, v31.4s\n"
+      "fadd v16.4s, v16.4s, v30.4s\n"
+      "fadd v17.4s, v17.4s, v31.4s\n"
+      "fadd v18.4s, v18.4s, v30.4s\n"
+      "fadd v19.4s, v19.4s, v31.4s\n"
+      "fadd v20.4s, v20.4s, v30.4s\n"
+      "fadd v21.4s, v21.4s, v31.4s\n"
+      "fadd v22.4s, v22.4s, v30.4s\n"
+      "fadd v23.4s, v23.4s, v31.4s\n"
+      "fadd v24.4s, v24.4s, v30.4s\n"
+      "fadd v25.4s, v25.4s, v31.4s\n"
+      "fadd v26.4s, v26.4s, v30.4s\n"
+      "fadd v27.4s, v27.4s, v31.4s\n"
 
-      // Compute how much of the 8x4 block of destination values that we have
+      // Compute how much of the 8x8 block of destination values that we have
       // computed fits in the destination matrix. Typically, all of it fits, but
-      // when the destination matrix shape is not a multiple of 8x4 there are
-      // some 8x4 blocks along the boundaries that do not fit entirely.
+      // when the destination matrix shape is not a multiple of 8x8 there are
+      // some 8x8 blocks along the boundaries that do not fit entirely.
       "sub w1, %w[dst_rows], %w[row]\n"
       "sub w2, %w[dst_cols], %w[col]\n"
       "mov w3, #8\n"
-      "mov w4, #4\n"
+      "mov w4, #8\n"
       "cmp w1, #8\n"
-      // Compute w1 = how many rows of the 8x4 block fit.
+      // Compute w1 = how many rows of the 8x8 block fit.
       "csel w1, w1, w3, le\n"
-      "cmp w2, #4\n"
-      // Compute w2 = how many cols of the 8x4 block fit.
+      "cmp w2, #8\n"
+      // Compute w2 = how many cols of the 8x8 block fit.
       "csel w2, w2, w4, le\n"
 
-      // Test if w1==8 && w2 == 4, i.e. if all of the 8x4 block fits.
+      // Test if w1==8 && w2 == 8, i.e. if all of the 8x8 block fits.
       "cmp w1, w3\n"
       "ccmp w2, w4, 0, eq\n"
-      // Yes, all of the 8x4 block fits, go to fast path.
+      // Yes, all of the 8x8 block fits, go to fast path.
       "beq 30f\n"
-      // Not all of the 8x4 block fits.
+      // Not all of the 8x8 block fits.
       // Set (x3 address, x4 stride) to write to `dst_tmp_buf`.
       "mov x3, %[dst_tmp_buf]\n"
       "mov x4, #32\n"
       "b 31f\n"
       "30:\n"
-      // Yes, all of the 8x4 block fits.
+      // Yes, all of the 8x8 block fits.
       // Set (x3 address, x4 stride) to write directly to destination matrix.
       "mov x3, %[dst_ptr]\n"
       "mov x4, x11\n"
@@ -940,12 +971,28 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
 
       // Write our values to the destination described by
       // (x3 address, x4 stride).
+      "str q12, [x3]\n"
+      "str q13, [x3, #16]\n"
+      "add x3, x3, x4\n"
+      "str q14, [x3]\n"
+      "str q15, [x3, #16]\n"
+      "add x3, x3, x4\n"
+      "str q16, [x3]\n"
+      "str q17, [x3, #16]\n"
+      "add x3, x3, x4\n"
+      "str q18, [x3]\n"
+      "str q19, [x3, #16]\n"
+      "add x3, x3, x4\n"
       "str q20, [x3]\n"
       "str q21, [x3, #16]\n"
       "add x3, x3, x4\n"
+      RUY_MAKE_ZERO(v20)
+      RUY_MAKE_ZERO(v21)
       "str q22, [x3]\n"
       "str q23, [x3, #16]\n"
       "add x3, x3, x4\n"
+      RUY_MAKE_ZERO(v22)
+      RUY_MAKE_ZERO(v23)
       "str q24, [x3]\n"
       "str q25, [x3, #16]\n"
       "add x3, x3, x4\n"
@@ -956,10 +1003,10 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
       RUY_MAKE_ZERO(v26)
       RUY_MAKE_ZERO(v27)
 
-      // If all of the 8x4 block fits, we just finished writing it to the
+      // If all of the 8x8 block fits, we just finished writing it to the
       // destination, so we skip the next part.
       "beq 41f\n"
-      // Not all of the 8x4 block fits in the destination matrix. We just wrote
+      // Not all of the 8x8 block fits in the destination matrix. We just wrote
       // it to `dst_tmp_buf`. Now we perform the slow scalar loop over it to
       // copy into the destination matrix the part that fits.
       "mov x3, %[dst_tmp_buf]\n"
@@ -995,8 +1042,8 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
       "20:\n"
       // Was already at end row.
       "mov %w[row], w6\n"  // Move back to first row.
-      "add %w[col], %w[col], #4\n"  // Move to the next column.
-      "add %[dst_col_ptr], %[dst_col_ptr], x11, lsl #2\n"
+      "add %w[col], %w[col], #8\n"  // Move to the next column.
+      "add %[dst_col_ptr], %[dst_col_ptr], x11, lsl #3\n"
       "mov %[dst_ptr], %[dst_col_ptr]\n"
       "21:\n"
 
@@ -1008,8 +1055,6 @@ void BinaryKernelNeonOutOfOrder64BP8x4(
       "mov w1, #2\n"
 
       "ble 1b\n"
-
-      "100:"
 
       // clang-format on
 
