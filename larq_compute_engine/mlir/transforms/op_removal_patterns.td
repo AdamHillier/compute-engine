@@ -29,8 +29,8 @@ def : Pat<(TF_IdentityNOp $arg), (replaceWithValue $arg)>;
 // https://github.com/llvm/llvm-project/blob/master/mlir/include/mlir/IR/Operation.h#L457-L462
 def : Pat<(TF_LceBsignOp:$op $x), (replaceWithValue $x), [(HasNoUseOf:$op)]>;
 def : Pat<(TF_LceBconv2dOp:$op $input, $filter, $post_activation_multiplier,
-            $post_activation_bias, $channels_in, $strides, $padding, $pad_values,
-            $dilations, $filter_format, $act),
+            $post_activation_bias, $write_bitpacked_threshold, $channels_in,
+            $strides, $padding, $pad_values, $dilations, $filter_format, $act),
           (replaceWithValue $input), [(HasNoUseOf:$op)]>;
 def : Pat<(TF_LceBMaxPool2dOp:$op $input, $padding, $stride_width,
             $stride_height, $filter_width, $filter_height),

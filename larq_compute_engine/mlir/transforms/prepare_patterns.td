@@ -31,6 +31,7 @@ def BinaryFilter : Constraint<CPred<"IsBinaryFilter($0)">>;
 def GetScaleVector : NativeCodeCall<"GetScaleVector($0)">;
 def GetNumChannels : NativeCodeCall<"GetNumChannels($_builder, $0)">;
 def IsDataFormatNHWC : ConstantAttr<TF_ConvnetDataFormatAttr, "NHWC">;
+def CreateNoneAttrValue : NativeCodeCall<"$_builder.getUnitAttr()">;
 
 def : Pat<(TF_Conv2DOp (TF_LceBsignOp $input), (ConstantOp $filter), $strides, $use_cudnn,
                        $padding, $explicit_padding, IsDataFormatNHWC: $data_format, $dilations),
@@ -38,6 +39,7 @@ def : Pat<(TF_Conv2DOp (TF_LceBsignOp $input), (ConstantOp $filter), $strides, $
             (TF_TransposeOp (TF_DivOp (ConstantOp $filter), (ConstantOp (GetScaleVector $filter))), (ConstantOp ConstantAttr<I32VectorElementsAttr<4>, "{3, 0, 1, 2}">)),
             (ConstantOp (GetScaleVector $filter)),
             (ConstantOp (GetConstantVector<"0.0f"> $filter)),
+            (ConstantOp (CreateNoneAttrValue)),
             (GetNumChannels $input),
             $strides,
             $padding,
@@ -63,6 +65,7 @@ def : Pat<(TF_Conv2DOp: $output
             (TF_TransposeOp (TF_DivOp (ConstantOp $filter), (ConstantOp (GetScaleVector $filter))), (ConstantOp ConstantAttr<I32VectorElementsAttr<4>, "{3, 0, 1, 2}">)),
             (ConstantOp (GetScaleVector $filter)),
             (ConstantOp (GetConstantVector<"0.0f"> $filter)),
+            (ConstantOp (CreateNoneAttrValue)),
             (GetNumChannels $input),
             $strides,
             ConstantAttr<StrAttr, "SAME">,

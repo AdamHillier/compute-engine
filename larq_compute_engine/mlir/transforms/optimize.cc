@@ -1,3 +1,5 @@
+#include <cmath>
+
 #include "larq_compute_engine/core/packbits.h"
 #include "larq_compute_engine/mlir/ir/lce_ops.h"
 #include "llvm/ADT/Optional.h"
@@ -69,6 +71,156 @@ DenseElementsAttr Bitpack(PatternRewriter& builder, Attribute x) {
 
 #include "larq_compute_engine/mlir/transforms/generated_optimize.inc"
 
+/**
+ * =================================================
+ * Computing thresholds for writing bitpacked output
+ * =================================================
+ *
+ * Consider a single output element of a binary convolution, y. We have that:
+ *
+ *                       y = clamp(a - 2x, c, C) * μ + β
+ *
+ * where x is the xor-popcount accumulator,
+ *       a is the backtransform addition,
+ *       c is the clamp-min,
+ *       C is the clamp-max,
+ *       μ is the channel multiplier,
+ *       β is the channel bias.
+ *
+ * We want to write a 0-bit if and only if y >= 0. To do this, we want to find
+ * a threshold τ so that we can decide whether or not to write a 0-bit or a
+ * 1-bit with a single comparison of x with τ.
+ *
+ * Throughout, the operator sign() is treated as mapping 0 |-> 1. This
+ * behaviour is isomorphic to taking the sign bit of a standard signed int32
+ * number.
+ *
+ * ----------------
+ * The general case
+ * ----------------
+ *
+ * First, suppose that μ != 0 and that that clamping range crosses 0, i.e.
+ * sign((c - 2x) * μ + β) != sign((c - 2x) * μ + β), so that the effect of
+ * clamping can be ignored. If either of these conditions does not hold, then
+ * the sign of y is constant and does not depend on x; we will consider these
+ * special cases later.
+ *
+ * If μ > 0:
+ *                  y >= 0 <-> (a - 2x) * μ + β >= 0
+ *                         <-> x <= 0.5 * (β / μ + a)
+ *                         <-> x <= ⌊0.5 * (β / μ + a)⌋   (as x is an integer)
+ *
+ *     We can therefore use a threshold κ := ⌊0.5 * (β / μ + a)⌋.
+ *
+ *     x is the xor-popcount accumulator and so is non-negative by definition.
+ *     As a result, if κ < 0 then x <= κ can never hold, so we can treat this
+ *     as a special case later on and assume that when μ > 0, κ >= 0.
+ *
+ * If μ < 0:
+ *                  y >= 0 <-> (a - 2x) * μ + β >= 0
+ *                         <-> x >= 0.5 * (β / μ + a)
+ *                         <-> x >= ⌈0.5 * (β / μ + a)⌉   (as x is an integer)
+ *
+ *     We can therefore use a threshold κ := ⌈0.5 * (β / μ + a)⌉.
+ *
+ *     Again, x is non-negative by definition, so if κ <= 0 then x >= κ will
+ *     always be true, so we can treat this as a special case later on and
+ *     assume that when μ < 0, κ > 0.
+ *
+ * The only remaining problem is that the comparison we make with κ depends on
+ * the sign of μ. For an efficient implementation, we don't want to have to
+ * sometimes use <= and sometimes use >=, and we don't want to depend on more
+ * data than just a single threshold. Luckily, we can avoid this. Notice that,
+ * whether μ > 0 or μ < 0, we always have:
+ *
+ *                    y >= 0 <-> sign(μ) * x <= sign(μ) * κ
+ *
+ * Define τ := sign(μ) * κ.
+ *
+ * As we assumed that (μ > 0 -> κ >= 0) and (μ < 0 -> κ > 0), it follows that
+ * sign(τ) = sign(μ) * sign(κ) = sign(μ).
+ *
+ * We can therefore conclude that:
+ *
+ *                         y >= 0 <-> sign(τ) * x <= τ
+ *
+ * This makes it possible to decide whether to write a 0-bit or a 1-bit by
+ * doing one integer multiply and one integer comparison.
+ *
+ * -------------
+ * Special cases
+ * -------------
+ *
+ * All of the remaining special cases (the transformed clamping range not
+ * crossing 0; μ = 0; μ > 0 ∧ κ < 0; μ < 0 ∧ κ <= 0) cause the sign of y to be
+ * constant and no longer depend on x. This means that we want to always write
+ * a 1-bit or always write a 0-bit.
+ *
+ * To always write a 0-bit (if and only if y >= 0), we can set τ := ∞ (the
+ * maximum signed representable number). Then, sign(τ) * x <= τ will always be
+ * true.
+ *
+ * To always write a 1-bit (if and only if y < 0), we can set τ := -∞ (the
+ * minimum signed representable number). Then, sign(τ) * x <= τ will always be
+ * false.
+ */
+std::vector<std::int32_t> ComputeWriteBitpackedOutputThresholds(
+    const float backtransform_add, const float clamp_min, const float clamp_max,
+    const DenseElementsAttr& multipliers, const DenseElementsAttr& biases) {
+  constexpr std::int32_t neg_inf = std::numeric_limits<std::int32_t>::min();
+  constexpr std::int32_t pos_inf = std::numeric_limits<std::int32_t>::max();
+
+  // Iterate throught the multiplier/bias pairs and compute the thresholds.
+  std::vector<std::int32_t> thresholds;
+  for (auto mult_bias_pair :
+       llvm::zip(multipliers.getValues<float>(), biases.getValues<float>())) {
+    const float mult = std::get<0>(mult_bias_pair);
+    const float bias = std::get<1>(mult_bias_pair);
+
+    const float output_range_start = (clamp_min * mult + bias);
+    const float output_range_end = (clamp_max * mult + bias);
+
+    // First, check for some special cases (detailed in the comment above).
+    if (output_range_start < 0 && output_range_end < 0) {
+      thresholds.push_back(neg_inf);  // We need to always write a 1-bit.
+      continue;
+    }
+    if (output_range_start >= 0 && output_range_end >= 0) {
+      thresholds.push_back(pos_inf);  // We need to always write a 0-bit.
+      continue;
+    }
+    if (mult == 0.0f) {
+      if (bias < 0) {
+        thresholds.push_back(neg_inf);  // We need to always write a 1-bit.
+      } else {
+        thresholds.push_back(pos_inf);  // We need to always write a 0-bit.
+      }
+      continue;
+    }
+
+    // The general case.
+    if (mult > 0.0f) {
+      const std::int32_t k =
+          std::floor(0.5 * (mult / bias + backtransform_add));
+      if (k < 0) {
+        thresholds.push_back(neg_inf);  // We need to always write a 1-bit.
+      } else {
+        thresholds.push_back(k);
+      }
+    } else /* if (mult < 0.0f) */ {
+      const std::int32_t k = std::ceil(0.5 * (mult / bias + backtransform_add));
+      if (k <= 0) {
+        thresholds.push_back(pos_inf);  // We need to always write a 0-bit.
+        continue;
+      } else {
+        thresholds.push_back(-1 * k);
+      }
+    }
+  }
+
+  return thresholds;
+}
+
 llvm::Optional<RankedTensorType> maybeGetBitpackedType(
     PatternRewriter& rewriter, ShapedType existing_type) {
   if (existing_type.getElementType().isInteger(32)) return llvm::None;
@@ -104,9 +256,62 @@ struct SetBitpackedActivations : public OpRewritePattern<BinaryOp> {
 
       if (auto maybe_bitpacked_type = maybeGetBitpackedType(
               rewriter, inner_bconv_op.getType().cast<ShapedType>())) {
+        // As the inner bconv op will be writing bitpacked output, we need to
+        // compute the thresholds for writing 1-bit or a 0-bit.
+
+        // Compute the backtransform add and the clamp min/max.
+        const auto filter_shape =
+            inner_bconv_op.input().getType().cast<ShapedType>().getShape();
+        const float backtransform_add = static_cast<float>(
+            filter_shape[1] * filter_shape[2] * filter_shape[3]);
+
+        const auto clamp_min_max =
+            llvm::StringSwitch<std::pair<std::int32_t, std::int32_t>>(
+                inner_bconv_op.activation())
+                .Case("RELU", {0, std::numeric_limits<std::int32_t>::max()})
+                .Case("RELU_N1_TO_1", {-1, 1})
+                .Case("RELU6", {0, 6})
+                .Default({std::numeric_limits<std::int32_t>::min(),
+                          std::numeric_limits<std::int32_t>::max()});
+        const float clamp_min = static_cast<float>(std::get<0>(clamp_min_max));
+        const float clamp_max = static_cast<float>(std::get<1>(clamp_min_max));
+
+        // Extract the post_activation multiplier and bias values.
+        const auto multipliers = DenseElementsAttr::get<float>(
+            inner_bconv_op.post_activation_multiplier()
+                .getType()
+                .cast<ShapedType>(),
+            inner_bconv_op.post_activation_multiplier());
+        const auto biases = DenseElementsAttr::get<float>(
+            inner_bconv_op.post_activation_bias().getType().cast<ShapedType>(),
+            inner_bconv_op.post_activation_bias());
+
+        std::vector<std::int32_t> thresholds =
+            ComputeWriteBitpackedOutputThresholds(
+                backtransform_add, clamp_min, clamp_max, multipliers, biases);
+        RankedTensorType thresholds_type = RankedTensorType::get(
+            multipliers.getType().cast<ShapedType>().getShape(),
+            rewriter.getIntegerType(32));
+
+        Value thresholds_input = rewriter.create<ConstantOp>(
+            inner_bconv_op.getLoc(),
+            DenseElementsAttr::get<std::int32_t>(thresholds_type, thresholds));
+
+        // We need an empty input with which to overwrite the
+        // `post_activation_multiply` and `post_activation_bias` (which are no
+        // longer needed, having computed the thresholds).
+        Value empty_input = rewriter.create<ConstantOp>(inner_bconv_op.getLoc(),
+                                                        rewriter.getNoneType(),
+                                                        rewriter.getUnitAttr());
+
+        ValueRange new_inner_bconv_op_operands(
+            {inner_bconv_op.input(), inner_bconv_op.filter(), empty_input,
+             empty_input, thresholds_input});
+
         rewriter.replaceOpWithNewOp<TF::LceBconv2dOp>(
-            inner_bconv_op, *maybe_bitpacked_type, inner_bconv_op.getOperands(),
+            inner_bconv_op, *maybe_bitpacked_type, new_inner_bconv_op_operands,
             inner_bconv_op.getAttrs());
+
         return success();
       }
     }

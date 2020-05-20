@@ -664,8 +664,13 @@ void BinaryKernelNeonOutOfOrder4x4(
 
 // clang-format on
 
+template <typename DstScalar>
 void BinaryKernelNeonOutOfOrder8x4(
     const BinaryKernelParams<8, 4, std::uint64_t>& params) {
+  static_assert(std::is_same<DstScalar, float>::value ||
+                    std::is_same<DstScalar, std::int32>::value,
+                "`DstScalar` must be float or int32.");
+
   CheckOffsetsInKernelParams(params);
   ruy::profiler::ScopeLabel label(
       "Binary Kernel (8x4) 64BP (kNeon, optimized for out-of-order cores)");

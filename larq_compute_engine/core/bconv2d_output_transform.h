@@ -22,8 +22,26 @@ namespace core {
 template <typename AccumScalar, typename DstScalar>
 struct OutputTransform {};
 
-// A part of the transformation is common to all output types.
-// This part is described by `OutputTransformBase`.
+// Output transformation for bitpacked int32 output.
+template <typename AccumScalar>
+struct OutputTransform<AccumScalar, std::int32_t> {
+  // As the fused multiply can be negative as well as positive, it's not
+  // possible to do bitpacking using threshold comparison using a single type of
+  // comparison (e.g. just <). To avoid unnecessary branching, we therefore
+  // pre-compute the sign of the fused multiply for each and adjust the bitpack
+  // threshold accordingly.
+  const AccumScalar* multiplier_sign = nullptr;
+  const AccumScalar* bitpack_threshold = nullptr;
+
+  inline bool Run(const AccumScalar accum, int out_channel) const {
+    static_assert(std::is_signed<AccumScalar>::value,
+                  "`AccumScalar` must be a signed type");
+    return accum * multiplier_sign[out_channel] < threshold[out_channel];
+  }
+};
+
+// Part of the transformation is common to the remaining output types (float and
+// int8). This part is described by `OutputTransformBase`.
 template <typename AccumScalar>
 struct OutputTransformBase {
   AccumScalar backtransform_add = 0;
@@ -31,23 +49,23 @@ struct OutputTransformBase {
   std::int32_t clamp_max = std::numeric_limits<AccumScalar>::max();
 
   inline AccumScalar RunBase(const AccumScalar accum) const {
-    // Backtransform can still be done in int32
+    // The backtransform can still be done in int32...
     AccumScalar x = backtransform_add - 2 * accum;
-    // Activation function can also be done in int32
+    // ...as can the activation function clamping.
     x = std::min<AccumScalar>(x, clamp_max);
     x = std::max<AccumScalar>(x, clamp_min);
     return x;
   }
 };
 
-// Output transformation for float kernels
+// Output transformation for float output.
 template <typename AccumScalar>
 struct OutputTransform<AccumScalar, float> : OutputTransformBase<AccumScalar> {
   const float* post_activation_multiplier = nullptr;
   const float* post_activation_bias = nullptr;
 
   float Run(const AccumScalar accum, int out_channel) const {
-    // Post multiply and add are done in float
+    // Post multiply and add are done in float.
     float x = static_cast<float>(this->RunBase(accum));
     if (post_activation_multiplier) {
       x *= post_activation_multiplier[out_channel];
@@ -56,25 +74,6 @@ struct OutputTransform<AccumScalar, float> : OutputTransformBase<AccumScalar> {
       x += post_activation_bias[out_channel];
     }
     return x;
-  }
-};
-
-// Output transformation for bitpacked output
-// Currently uses an un-optimized path by using the float transform.
-// TODO: Precompute a per-channel accumulation threshold
-// so that we can simply do a single compare here:
-//     return (accum <= threshold[out_channel]);
-// Note: This would require modifying the converter or Prepare step to always
-// have *positive* post_activation_multipliers, since otherwise we would have
-// `<=` for some channels and `>=` for other channels.
-template <typename AccumScalar>
-struct OutputTransform<AccumScalar, std::int32_t>
-    : OutputTransform<AccumScalar, float> {
-  bool Run(const AccumScalar accum, int out_channel) const {
-    // Currently we take an un-optimized reference approach by first running the
-    // float kernel and then taking the sign.
-    float x = OutputTransform<AccumScalar, float>::Run(accum, out_channel);
-    return (x < 0);
   }
 };
 
