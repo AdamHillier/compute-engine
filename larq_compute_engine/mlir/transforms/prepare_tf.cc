@@ -1,3 +1,4 @@
+#include "larq_compute_engine/core/types.h"
 #include "larq_compute_engine/mlir/ir/lce_ops.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/PatternMatch.h"
@@ -11,6 +12,8 @@ namespace mlir {
 namespace TFL {
 
 namespace {
+
+using compute_engine::core::bitpacking_bitwidth;
 
 // Prepare LCE operations in functions for subsequent legalization.
 struct PrepareLCE : public PassWrapper<PrepareLCE, FunctionPass> {
@@ -107,6 +110,38 @@ IntegerAttr GetNumChannels(Builder& b, Value output_val) {
   auto output_type = output_val.getType().cast<ShapedType>();
   auto shape_vector = output_type.getShape();
   return b.getI32IntegerAttr(shape_vector[shape_vector.size() - 1]);
+}
+
+// Infers the number of groups from the shaped tensors of the input and the
+// filter. Will fail if any other type is passed. Will emit an error if the two
+// shapes are incompatible.
+IntegerAttr GetNumGroups(Builder& b, Value input_val, Value filter_val) {
+  auto input_type = input_val.getType().cast<ShapedType>();
+  auto input_shape_vector = input_type.getShape();
+  auto total_input_channels = input_shape_vector[input_shape_vector.size() - 1];
+  auto filter_type = filter_val.getType().cast<ShapedType>();
+  auto filter_shape_vector = filter_type.getShape();
+  auto filter_input_channels =
+      filter_shape_vector[filter_shape_vector.size() - 2];
+
+  auto num_groups = total_input_channels / filter_input_channels;
+  if (total_input_channels % filter_input_channels != 0) {
+    mlir::emitError(filter_val.getLoc())
+        << "Filter dimensions invalid: the number of filter input channels "
+        << filter_input_channels
+        << " does not divide the total number of input channels "
+        << total_input_channels << "\n";
+    num_groups = 1;
+  }
+  if (num_groups > 1 && filter_input_channels % bitpacking_bitwidth != 0) {
+    mlir::emitError(filter_val.getLoc())
+        << "Invalid binary group convolution: the number of input channels "
+           "per-group "
+           "must be a multiple of "
+        << bitpacking_bitwidth << ", but is " << filter_input_channels << "\n";
+    num_groups = 1;
+  }
+  return b.getI32IntegerAttr(num_groups);
 }
 
 #include "larq_compute_engine/mlir/transforms/generated_prepare.inc"

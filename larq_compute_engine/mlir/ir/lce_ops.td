@@ -122,6 +122,7 @@ TODO
     I32Attr:$dilation_height_factor,
     I32Attr:$dilation_width_factor,
     TFL_AFAttr:$fused_activation_function,
+    I32Attr:$groups,
     DefaultValuedAttr<I32Attr, "0">:$pad_values,
     TFL_PaddingAttr:$padding,
     I32Attr:$stride_height,

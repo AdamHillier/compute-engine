@@ -42,6 +42,7 @@ TEST(LCEOpsSerializationTest, BConv2dTest) {
                               llvm::None, llvm::None, llvm::None, 0);
 
   op->setAttr("channels_in", getIntegerAttr(builder, 64));
+  op->setAttr("groups", getIntegerAttr(builder, 2));
   op->setAttr("dilation_height_factor", getIntegerAttr(builder, 3));
   op->setAttr("dilation_width_factor", getIntegerAttr(builder, 4));
   op->setAttr("stride_height", getIntegerAttr(builder, 1));
@@ -55,6 +56,7 @@ TEST(LCEOpsSerializationTest, BConv2dTest) {
   const flexbuffers::Map& m = flexbuffers::GetRoot(v).AsMap();
 
   ASSERT_EQ(m["channels_in"].AsInt32(), 64);
+  ASSERT_EQ(m["groups"].AsInt32(), 2);
   ASSERT_EQ(m["dilation_height_factor"].AsInt32(), 3);
   ASSERT_EQ(m["dilation_width_factor"].AsInt32(), 4);
   ASSERT_EQ(m["stride_height"].AsInt32(), 1);

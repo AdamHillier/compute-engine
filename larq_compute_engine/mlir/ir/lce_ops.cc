@@ -36,6 +36,7 @@ std::vector<uint8_t> Bconv2dOp::buildCustomOptions() {
     fbb.Int("dilation_width_factor", dilation_width_factor());
     fbb.Int("fused_activation_function",
             (int)ConvertActivationAttr(fused_activation_function()));
+    fbb.Int("groups", groups());
     fbb.Int("pad_values", pad_values());
     fbb.Int("padding", (int)ConvertPaddingAttr(padding()));
     fbb.Int("stride_height", stride_height());

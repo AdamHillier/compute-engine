@@ -37,12 +37,13 @@ class GetConstantVector<string val> : NativeCodeCall<"GetConstantVector($0, " # 
 def BinaryFilter : Constraint<CPred<"IsBinaryFilter($0)">>;
 def GetScaleVector : NativeCodeCall<"GetScaleVector($0)">;
 def GetNumChannels : NativeCodeCall<"GetNumChannels($_builder, $0)">;
+def GetNumGroups : NativeCodeCall<"GetNumGroups($_builder, $0, $1)">;
 def IsDataFormatNHWC : ConstantAttr<TF_ConvnetDataFormatAttr, "NHWC">;
 def CreateNoneAttrValue : NativeCodeCall<"$_builder.getUnitAttr()">;
 
 def : Pat<(TF_Conv2DOp
               (LQ_DequantizeOp: $dequantized_input $input),
-              (ConstantOp $filter),
+              (ConstantOp: $filter_op $filter),
               IsIntList1XY1:$strides,
               $use_cudnn,
               $padding,
@@ -63,6 +64,7 @@ def : Pat<(TF_Conv2DOp
               ExtractI32At<1>:$dilations,
               ExtractI32At<2>:$dilations,
               TFL_AF_None,
+              (GetNumGroups $dequantized_input, $filter_op),
               ConstantAttr<I32Attr, "0">,
               $padding,
               ExtractI32At<1>:$strides,
@@ -82,7 +84,7 @@ def : Pat<(TF_Conv2DOp:$output
                   (LQ_DequantizeOp: $dequantized_input $input),
                   (ConstantOp $paddings),
                   (ConstantOp $pad_values)),
-              (ConstantOp $filter),
+              (ConstantOp: $filter_op $filter),
               IsIntList1XY1:$strides,
               $use_cudnn,
               ConstantAttr<StrAttr, "VALID">,
@@ -103,6 +105,7 @@ def : Pat<(TF_Conv2DOp:$output
               ExtractI32At<2>:$dilations,
               TFL_AF_None,
               ConstantAttr<I32Attr, "1">,
+              (GetNumGroups $dequantized_input, $filter_op),
               ConstantAttr<StrAttr, "SAME">,
               ExtractI32At<1>:$strides,
               ExtractI32At<2>:$strides),
