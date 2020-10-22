@@ -20,6 +20,7 @@ struct TfLiteBConv2DParams {
   std::int32_t filter_height{0};
   std::int32_t channels_in{0};
   std::int32_t channels_out{0};
+  std::int32_t groups{1};
 
   // Strides
   std::int32_t stride_height{0};

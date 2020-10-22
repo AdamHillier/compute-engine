@@ -22,19 +22,22 @@ limitations under the License.
 #define COMPUTE_ENGINE_CORE_BCONV2D_REFERENCE_H_
 
 #include "larq_compute_engine/core/bconv2d/output_transform.h"
+#include "larq_compute_engine/tflite/kernels/bconv2d_params.h"
 #include "tensorflow/lite/kernels/internal/common.h"
 #include "tensorflow/lite/kernels/internal/types.h"
+
+using namespace tflite;
 
 namespace compute_engine {
 namespace core {
 namespace bconv2d {
 
-using namespace tflite;
+using compute_engine::tflite::bconv2d::TfLiteBConv2DParams;
 
 template <typename AccumScalar, typename DstScalar,
           OutputTransformDetails details>
 inline void BConv2DReference(
-    const ConvParams& params, const RuntimeShape& packed_input_shape,
+    const TfLiteBConv2DParams* params, const RuntimeShape& packed_input_shape,
     const TBitpacked* packed_input_data,
     const RuntimeShape& packed_filter_shape,
     const TBitpacked* packed_filter_data,
@@ -47,27 +50,31 @@ inline void BConv2DReference(
                 "The reference implementation supports either float "
                 "output, bitpacked output or 8-bit quantized output.");
 
-  const int stride_width = params.stride_width;
-  const int stride_height = params.stride_height;
-  const int dilation_width_factor = params.dilation_width_factor;
-  const int dilation_height_factor = params.dilation_height_factor;
-  const int pad_width = params.padding_values.width;
-  const int pad_height = params.padding_values.height;
+  const int stride_width = params->stride_width;
+  const int stride_height = params->stride_height;
+  const int dilation_width_factor = params->dilation_width_factor;
+  const int dilation_height_factor = params->dilation_height_factor;
+  const int pad_width = params->padding_values.width;
+  const int pad_height = params->padding_values.height;
 
   TFLITE_DCHECK_EQ(packed_input_shape.DimensionsCount(), 4);
   TFLITE_DCHECK_EQ(packed_filter_shape.DimensionsCount(), 4);
   TFLITE_DCHECK_EQ(output_shape.DimensionsCount(), 4);
 
   const int batches = MatchingDim(packed_input_shape, 0, output_shape, 0);
-  const int input_depth =
-      MatchingDim(packed_input_shape, 3, packed_filter_shape, 3);
+  const int input_depth_per_group = packed_filter_shape.Dims(3);
   const int output_depth = packed_filter_shape.Dims(0);
+  const int output_depth_per_group = output_depth / params->groups;
   const int input_height = packed_input_shape.Dims(1);
   const int input_width = packed_input_shape.Dims(2);
   const int filter_height = packed_filter_shape.Dims(1);
   const int filter_width = packed_filter_shape.Dims(2);
   const int output_height = output_shape.Dims(1);
   const int output_width = output_shape.Dims(2);
+
+  TFLITE_DCHECK_EQ(input_depth_per_group * params->groups,
+                   packed_input_shape.Dims(3));
+
   for (int batch = 0; batch < batches; ++batch) {
     for (int out_y = 0; out_y < output_height; ++out_y) {
       for (int out_x = 0; out_x < output_width; ++out_x) {
@@ -76,10 +83,12 @@ inline void BConv2DReference(
         for (int out_channel = 0; out_channel < output_depth; ++out_channel) {
           const int in_x_origin = (out_x * stride_width) - pad_width;
           const int in_y_origin = (out_y * stride_height) - pad_height;
+          const int group = out_channel / output_depth_per_group;
           AccumScalar accum = AccumScalar(0);
           for (int filter_y = 0; filter_y < filter_height; ++filter_y) {
             for (int filter_x = 0; filter_x < filter_width; ++filter_x) {
-              for (int in_channel = 0; in_channel < input_depth; ++in_channel) {
+              for (int in_channel = 0; in_channel < input_depth_per_group;
+                   ++in_channel) {
                 const int in_x = in_x_origin + dilation_width_factor * filter_x;
                 const int in_y =
                     in_y_origin + dilation_height_factor * filter_y;
@@ -89,7 +98,8 @@ inline void BConv2DReference(
                 if ((in_x >= 0) && (in_x < input_width) && (in_y >= 0) &&
                     (in_y < input_height)) {
                   input_value = packed_input_data[Offset(
-                      packed_input_shape, batch, in_y, in_x, in_channel)];
+                      packed_input_shape, batch, in_y, in_x,
+                      group * input_depth_per_group + in_channel)];
                 }
                 TBitpacked filter_value =
                     packed_filter_data[Offset(packed_filter_shape, out_channel,

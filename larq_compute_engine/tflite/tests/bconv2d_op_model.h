@@ -28,7 +28,7 @@ class BaseBConv2DOpModel : public SingleOpModel {
       const TensorData& filter, const TensorData& output,
       const TensorData& post_activation_multiplier,
       const TensorData& post_activation_bias, const TensorData& thresholds,
-      int channels_in, int stride_width = 1, int stride_height = 1,
+      int channels_in, int groups, int stride_width = 1, int stride_height = 1,
       enum Padding padding = Padding_VALID, int pad_values = 0,
       enum ActivationFunctionType activation = ActivationFunctionType_NONE,
       int dilation_width_factor = 1, int dilation_height_factor = 1,
@@ -42,10 +42,8 @@ class BaseBConv2DOpModel : public SingleOpModel {
 
     flexbuffers::Builder fbb;
     fbb.Map([&]() {
-      // This attribute is necessary because if the filters are bitpacked and
-      // we're reading bitpacked input then we don't have access to the original
-      // 'true' number of input channels.
       fbb.Int("channels_in", channels_in);
+      fbb.Int("groups", groups);
       fbb.Int("stride_height", stride_height);
       fbb.Int("stride_width", stride_width);
       fbb.Int("dilation_height_factor", dilation_height_factor);

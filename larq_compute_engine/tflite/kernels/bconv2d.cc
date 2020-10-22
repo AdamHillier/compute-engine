@@ -53,7 +53,7 @@ void* Init(TfLiteContext* context, const char* buffer, std::size_t length) {
   const std::uint8_t* buffer_t = reinterpret_cast<const std::uint8_t*>(buffer);
   const flexbuffers::Map& m = flexbuffers::GetRoot(buffer_t, length).AsMap();
 
-  // Read the op's input arguments into the "conv_params" struct
+  // Read the op's input arguments into the `conv_params` struct
 
   LCE_ENSURE_PARAM(conv_params, context, !m["stride_height"].IsNull());
   LCE_ENSURE_PARAM(conv_params, context, !m["stride_width"].IsNull());
@@ -82,6 +82,12 @@ void* Init(TfLiteContext* context, const char* buffer, std::size_t length) {
   // we cannot infer the 'true' input shape, so there's an explicit integer
   // attribute added to the op in the converter.
   conv_params->channels_in = m["channels_in"].AsInt32();
+
+  if (!m["groups"].IsNull()) {
+    conv_params->groups = m["groups"].AsInt32();
+  } else {
+    conv_params->groups = 1;
+  }
 
   conv_params->fused_activation_function = ConvertActivation(
       (ActivationFunctionType)m["fused_activation_function"].AsInt32());
@@ -135,6 +141,18 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   conv_params->channels_out = SizeOfDimension(filter, 0);
   conv_params->filter_height = SizeOfDimension(filter, 1);
   conv_params->filter_width = SizeOfDimension(filter, 2);
+
+  const std::int32_t groups = conv_params->groups;
+  TF_LITE_ENSURE_EQ(context, conv_params->channels_in % groups, 0);
+  TF_LITE_ENSURE_EQ(context, conv_params->channels_out % groups, 0);
+  if (groups > 1) {
+    TF_LITE_ENSURE_EQ(
+        context,
+        (conv_params->channels_in / groups) % core::bitpacking_bitwidth, 0);
+    TF_LITE_ENSURE_MSG(
+        context, kernel_type == KernelType::kReference,
+        "Grouped binary convolutions are not supported with this kernel.");
+  }
 
   // Compute the padding and output values (height, width)
   int out_width, out_height;
@@ -232,10 +250,10 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     }
 
     // Resize the im2col tensor
-    int channels_in = GetBitpackedSize(conv_params->channels_in);
+    int bitpacked_channels_in = GetBitpackedSize(conv_params->channels_in);
     TfLiteIntArray* im2col_size = TfLiteIntArrayCopy(output_shape);
-    im2col_size->data[3] =
-        channels_in * conv_params->filter_height * conv_params->filter_width;
+    im2col_size->data[3] = bitpacked_channels_in * conv_params->filter_height *
+                           conv_params->filter_width;
     TfLiteTensor* im2col =
         GetTemporary(context, node, conv_params->im2col_index);
     im2col->type = kTfLiteInt32;
@@ -277,6 +295,11 @@ void OneTimeSetup(TfLiteContext* context, TfLiteNode* node,
   const auto* post_activation_bias = GetInput(context, node, 3);
   const auto* output = GetOutput(context, node, 0);
 
+  // Division is safe because at this point we know that channels_in is a
+  // multiple of the number of groups.
+  const std::int32_t channels_in_per_group =
+      params->channels_in / params->groups;
+
   // For 'same-zero' padding, compute the padding-correction.
   if (params->padding_type == kTfLitePaddingSame && params->pad_value == 0) {
     params->padding_buffer.resize(
@@ -285,7 +308,7 @@ void OneTimeSetup(TfLiteContext* context, TfLiteNode* node,
             params->dilation_height_factor, params->dilation_width_factor));
     core::bconv2d::zero_padding_correction::CacheCorrectionValues(
         GetTensorData<TBitpacked>(filter), params->filter_height,
-        params->filter_width, params->channels_out, params->channels_in,
+        params->filter_width, params->channels_out, channels_in_per_group,
         params->dilation_height_factor, params->dilation_width_factor,
         GetTensorData<float>(post_activation_multiplier),
         params->padding_buffer.data());
@@ -301,7 +324,7 @@ void OneTimeSetup(TfLiteContext* context, TfLiteNode* node,
 
     const auto filter_shape = GetTensorShape(GetInput(context, node, 1));
     const std::int32_t backtransform_add =
-        filter_shape.Dims(1) * filter_shape.Dims(2) * params->channels_in;
+        filter_shape.Dims(1) * filter_shape.Dims(2) * channels_in_per_group;
     const double output_scale =
         output->type == kTfLiteInt8 ? output->params.scale : 1.0f;
     const double output_zero_point =
@@ -427,18 +450,11 @@ void EvalRef(TfLiteContext* context, TfLiteNode* node,
   const auto* packed_filter = GetInput(context, node, 1);
   auto* output = GetOutput(context, node, 0);
 
-  // Using the standard TF Lite ConvParams struct.
-  // This requires extra step of converting the TfLiteBConv2DParams
-  // but unifies the interface with the default TF lite API for CONV params
-  // which is used in internal TF lite im2col functions.
-  ConvParams op_params;
-  GetConvParamsType(*params, op_params);
-
   OutputTransform<DstScalar> output_transform;
   GetOutputTransform(output_transform, context, node, params);
 
   core::bconv2d::BConv2DReference<std::int32_t, DstScalar>(
-      op_params, GetTensorShape(input), GetTensorData<TBitpacked>(input),
+      params, GetTensorShape(input), GetTensorData<TBitpacked>(input),
       GetTensorShape(packed_filter), GetTensorData<TBitpacked>(packed_filter),
       output_transform, GetTensorShape(output),
       GetTensorData<DstScalar>(output), params->pad_value);
