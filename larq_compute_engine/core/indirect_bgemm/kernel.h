@@ -28,6 +28,7 @@ template <typename DstScalar>
 struct IndirectBGEMMKernel {
   using MicroKernelFunction = void(const std::int32_t, const std::int32_t,
                                    const std::int32_t, const std::int32_t,
+                                   const std::int32_t,
                                    const bconv2d::OutputTransform<DstScalar>&,
                                    const TBitpacked*, const TBitpacked**,
                                    DstScalar*);
@@ -70,20 +71,23 @@ inline IndirectBGEMMKernel<DstScalar> SelectRuntimeKernel(
         typename std::conditional<is_float_or_int8, DstScalar, float>::type;
     using KFn = typename IndirectBGEMMKernel<DstScalar>::MicroKernelFunction;
 
-    if (bitpacked_input_shape.Dims(3) % 4 == 0) {
-      if (bitpacked_input_shape.Dims(3) > 4) {
+    const std::int32_t input_depth_per_group =
+        bitpacked_input_shape.Dims(3) / conv_params->groups;
+
+    if (input_depth_per_group % 4 == 0) {
+      if (input_depth_per_group > 4) {
         return {(KFn*)&kernel_8x4x4_aarch64::RunKernel<DS, true>, 8, 4, 4};
       } else {
         return {(KFn*)&kernel_8x4x4_aarch64::RunKernel<DS, false>, 8, 4, 4};
       }
-    } else if (bitpacked_input_shape.Dims(3) % 2 == 0) {
-      if (bitpacked_input_shape.Dims(3) > 2) {
+    } else if (input_depth_per_group % 2 == 0) {
+      if (input_depth_per_group > 2) {
         return {(KFn*)&kernel_8x4x2_aarch64::RunKernel<DS, true>, 8, 4, 2};
       } else {
         return {(KFn*)&kernel_8x4x2_aarch64::RunKernel<DS, false>, 8, 4, 2};
       }
     } else {
-      if (bitpacked_input_shape.Dims(3) > 1) {
+      if (input_depth_per_group > 1) {
         return {(KFn*)&kernel_8x4x1_aarch64::RunKernel<DS, true>, 8, 4, 1};
       } else {
         return {(KFn*)&kernel_8x4x1_aarch64::RunKernel<DS, false>, 8, 4, 1};
@@ -98,13 +102,16 @@ inline IndirectBGEMMKernel<DstScalar> SelectRuntimeKernel(
 
 template <typename DstScalar>
 void RunKernel(const IndirectBGEMMKernel<DstScalar>& kernel,
-               const std::int32_t conv_kernel_size,
-               const std::int32_t bitpacked_input_channels,
                const std::int32_t output_size,
+               const std::int32_t conv_kernel_size, const std::int32_t groups,
+               const std::int32_t input_depth,
                const std::int32_t output_channels,
                const bconv2d::OutputTransform<DstScalar>& output_transform,
                const TBitpacked* packed_weights_ptr,
                const TBitpacked** indirection_buffer, DstScalar* output_ptr) {
+  TFLITE_DCHECK_EQ(input_depth % groups, 0);
+  TFLITE_DCHECK_EQ((input_depth / groups) % kernel.block_size_depth, 0);
+
   // TODO: implement multithreading here.
   for (std::int32_t pixel_start = 0; pixel_start < output_size;
        pixel_start += kernel.block_size_pixels) {
@@ -114,7 +121,7 @@ void RunKernel(const IndirectBGEMMKernel<DstScalar>& kernel,
             : output_channels;
     kernel.micro_kernel_function(
         std::min(output_size - pixel_start, kernel.block_size_pixels),
-        conv_kernel_size, bitpacked_input_channels, output_channels,
+        conv_kernel_size, groups, input_depth, output_channels,
         output_transform, packed_weights_ptr,
         indirection_buffer + pixel_start * conv_kernel_size,
         output_ptr + pixel_start * output_stride);
