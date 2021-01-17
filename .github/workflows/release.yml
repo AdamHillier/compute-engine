@@ -190,12 +190,12 @@ jobs:
           python --version
           python -m pip install wheel setuptools numpy six --no-cache-dir
 
-          ./configure.sh
+          python \.configure.py << "\r\n\r\n\r\n\r\n"
 
-          bazelisk --output_base=cache build :build_pip_pkg --copt=/arch:AVX --enable_runfiles --define=override_eigen_strong_inline=true
+          bazelisk --output_base=cache build :build_pip_pkg --enable_runfiles
           bazel-bin/build_pip_pkg wheelhouse
 
-        shell: bash
+        shell: pwsh
       - uses: actions/upload-artifact@v2.2.0
         with:
           name: ${{ runner.os }}-wheels
